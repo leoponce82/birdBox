@@ -3,6 +3,7 @@
 #include <Arduino_LED_Matrix.h>
 #include <ArduinoMqttClient.h>
 
+
 const char ssid[] = "YOUR_SSID";      // replace with your network SSID
 const char pass[] = "YOUR_PASSWORD";   // replace with your network password
 
@@ -15,6 +16,8 @@ const int I2C_ADDRESS = 0x08;
 ArduinoLEDMatrix matrix;
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
+
+const int I2C_ADDRESS = 0x08;
 
 void onReceive(int numBytes) {
   while (Wire.available()) {
@@ -32,6 +35,7 @@ void showStatus(const char *msg) {
   matrix.clear();
   matrix.print(msg);
 }
+
 
 void setup() {
   Serial.begin(115200);
@@ -66,6 +70,10 @@ void loop() {
   mqttClient.beginMessage(topic);
   mqttClient.print(random(0, 100));
   mqttClient.endMessage();
+}
+
+void loop() {
+  // main loop can be extended as needed
   delay(1000);
 }
 
