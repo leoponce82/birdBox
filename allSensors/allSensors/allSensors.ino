@@ -28,6 +28,9 @@ static inline void tcaSelect(uint8_t ch) {
 }
 #define OLED_SELECT() tcaSelect(SCREEN_CHANNEL)
 #define RTC_SELECT()  tcaSelect(SCREEN_CHANNEL)  // RTC shares CH7
+#define UNO_R4_CHANNEL 4      // TCA9548A channel for external Uno R4
+#define UNO_R4_ADDR    0x08   // I2C address of the Uno R4
+#define UNO_R4_SELECT() tcaSelect(UNO_R4_CHANNEL)
 // -------------------- OLED instance --------------------
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 RTC_DS3231 rtc;
@@ -144,6 +147,12 @@ void resetChannelGroup(uint8_t ch) {
     pinMode(xshutPins[gi], OUTPUT);
     digitalWrite(xshutPins[gi], LOW);
   }
+}
+
+bool connectUnoR4() {
+  UNO_R4_SELECT();
+  Wire.beginTransmission(UNO_R4_ADDR);
+  return (Wire.endTransmission() == 0);
 }
 
 // --- SHUTDOWN SEQUENCE ---
@@ -264,6 +273,16 @@ void setup() {
   // RTC
   RTC_SELECT();
   rtc.begin(); // assume time is already set
+
+  // Uno R4 on channel 4
+  bool unoR4Ok = connectUnoR4();
+  tcaSelect(SCREEN_CHANNEL);
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.print(F("UNO R4: "));
+  display.println(unoR4Ok ? F("OK") : F("FAIL"));
+  display.display();
+  delay(400);
   
   // Initial switch state
   prevSwOn = readSwitchOn();
