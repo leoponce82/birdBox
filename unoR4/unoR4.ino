@@ -7,7 +7,7 @@
 const char ssid[] = "Ponce";      // replace with your network SSID
 const char pass[] = "leoponce82";   // replace with your network password
 
-const char broker[] = "BROKER_IP";    // replace with MQTT broker IP or host
+const char broker[] = "10.60.245.204";    // replace with MQTT broker IP or host
 const int  brokerPort = 1883;
 const char topic[] = "unoR4/random";
 
