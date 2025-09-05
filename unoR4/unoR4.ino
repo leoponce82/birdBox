@@ -1,6 +1,6 @@
 #include <WiFiS3.h>
 #include <Wire.h>
-#include <Arduino_LED_Matrix.h>
+#include "Arduino_LED_Matrix.h"
 #include <ArduinoMqttClient.h>
 
 
@@ -27,10 +27,10 @@ void onReceive(int numBytes) {
 
 void onRequest() {
   const char response[] = "OK";
-  Wire.write((const uint8_t*)response, sizeof(response)-1);
+  Wire.write((byte *)response, sizeof(response)-1);
 }
 
-const uint8_t STATUS_W[8][12] = {
+byte STATUS_W[8][12] = {
   {1,0,0,0,0,0,0,0,0,0,0,1},
   {1,0,0,0,0,0,0,0,0,0,0,1},
   {1,0,0,0,0,0,0,0,0,0,0,1},
@@ -41,7 +41,7 @@ const uint8_t STATUS_W[8][12] = {
   {1,1,0,0,0,0,0,0,0,0,1,1}
 };
 
-const uint8_t STATUS_M[8][12] = {
+byte STATUS_M[8][12] = {
   {1,0,0,0,0,0,0,0,0,0,0,1},
   {1,1,0,0,0,0,0,0,0,0,1,1},
   {1,0,1,0,0,0,0,0,0,1,0,1},
@@ -52,7 +52,7 @@ const uint8_t STATUS_M[8][12] = {
   {1,0,0,0,0,0,0,0,0,0,0,1}
 };
 
-const uint8_t STATUS_E[8][12] = {
+byte STATUS_E[8][12] = {
   {0,1,1,1,1,1,1,1,1,1,1,0},
   {0,1,0,0,0,0,0,0,0,0,0,0},
   {0,1,0,0,0,0,0,0,0,0,0,0},
@@ -63,7 +63,7 @@ const uint8_t STATUS_E[8][12] = {
   {0,1,1,1,1,1,1,1,1,1,1,0}
 };
 
-const uint8_t STATUS_C[8][12] = {
+byte STATUS_C[8][12] = {
   {0,0,1,1,1,1,1,1,1,1,0,0},
   {0,1,0,0,0,0,0,0,0,0,1,0},
   {1,0,0,0,0,0,0,0,0,0,0,1},
