@@ -7,7 +7,7 @@ Connects to a local broker and prints any messages published on the
 
 import paho.mqtt.client as mqtt
 
-BROKER = "localhost"  # replace with broker IP if not local
+BROKER = "10.60.245.204"  # replace with broker IP if not local
 TOPIC = "unoR4/random"
 
 
