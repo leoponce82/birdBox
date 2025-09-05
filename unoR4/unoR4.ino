@@ -30,9 +30,66 @@ void onRequest() {
   Wire.write((const uint8_t*)response, sizeof(response)-1);
 }
 
-void showStatus(const char *msg) {
+const uint8_t STATUS_W[8][12] = {
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {1,0,0,1,0,0,0,0,1,0,0,1},
+  {1,0,0,1,0,0,0,0,1,0,0,1},
+  {1,0,1,0,0,0,0,0,0,1,0,1},
+  {1,1,0,0,0,0,0,0,0,0,1,1}
+};
+
+const uint8_t STATUS_M[8][12] = {
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {1,1,0,0,0,0,0,0,0,0,1,1},
+  {1,0,1,0,0,0,0,0,0,1,0,1},
+  {1,0,0,1,0,0,0,0,1,0,0,1},
+  {1,0,0,0,1,0,0,1,0,0,0,1},
+  {1,0,0,0,0,1,1,0,0,0,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,1}
+};
+
+const uint8_t STATUS_E[8][12] = {
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,1,0,0,0,0,0,0,0,0,0,0},
+  {0,1,0,0,0,0,0,0,0,0,0,0},
+  {0,1,1,1,1,1,1,1,0,0,0,0},
+  {0,1,0,0,0,0,0,0,0,0,0,0},
+  {0,1,0,0,0,0,0,0,0,0,0,0},
+  {0,1,0,0,0,0,0,0,0,0,0,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0}
+};
+
+const uint8_t STATUS_C[8][12] = {
+  {0,0,1,1,1,1,1,1,1,1,0,0},
+  {0,1,0,0,0,0,0,0,0,0,1,0},
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {1,0,0,0,0,0,0,0,0,0,0,0},
+  {1,0,0,0,0,0,0,0,0,0,0,0},
+  {1,0,0,0,0,0,0,0,0,0,0,1},
+  {0,1,0,0,0,0,0,0,0,0,1,0},
+  {0,0,1,1,1,1,1,1,1,1,0,0}
+};
+
+void showStatus(char msg) {
   matrix.clear();
-  matrix.print(msg);
+  switch (msg) {
+    case 'W':
+      matrix.renderBitmap(STATUS_W, 8, 12);
+      break;
+    case 'M':
+      matrix.renderBitmap(STATUS_M, 8, 12);
+      break;
+    case 'E':
+      matrix.renderBitmap(STATUS_E, 8, 12);
+      break;
+    case 'C':
+      matrix.renderBitmap(STATUS_C, 8, 12);
+      break;
+  }
 }
 
 
@@ -43,7 +100,7 @@ void setup() {
   Wire.onRequest(onRequest);
 
   matrix.begin();
-  showStatus("W");
+  showStatus('W');
 
   int status = WL_IDLE_STATUS;
   while (status != WL_CONNECTED) {
@@ -54,13 +111,13 @@ void setup() {
   }
   Serial.println("Connected to WiFi");
 
-  showStatus("M");
+  showStatus('M');
   if (!mqttClient.connect(broker, brokerPort)) {
     Serial.println("MQTT connection failed");
-    showStatus("E");
+    showStatus('E');
   } else {
     Serial.println("MQTT connected");
-    showStatus("C");
+    showStatus('C');
   }
 }
 
@@ -69,10 +126,6 @@ void loop() {
   mqttClient.beginMessage(topic);
   mqttClient.print(random(0, 100));
   mqttClient.endMessage();
-}
-
-void loop() {
-  // main loop can be extended as needed
   delay(1000);
 }
 
