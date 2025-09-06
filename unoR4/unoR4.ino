@@ -174,7 +174,6 @@ void setup() {
   } else {
     Serial.println("MQTT connected");
     showStatus('C');
-    publishTicker.attach_ms(100, publishISR);
   }
 }
 
