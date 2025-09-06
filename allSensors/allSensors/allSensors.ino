@@ -3,6 +3,8 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <RTClib.h>
+#include <TimerOne.h>
+#include <PinChangeInterrupt.h>
 
 // --- Power / control pins ---
 #define POWER_HOLD_PIN     26   // output, goes HIGH after boot
@@ -17,7 +19,7 @@
 #define SCREEN_HEIGHT   64
 #define OLED_RESET      -1
 #define SCREEN_ADDRESS  0x3D
-#define SCREEN_CHANNEL  7      // TCA9548A channel for OLED (and RTC if present)
+#define SCREEN_CHANNEL  7      // TCA9548A channel for OLED and RTC
 // -------------------- TCA9548A --------------------
 #define TCA_ADDRESS     0x70
 static inline void tcaSelect(uint8_t ch) {
@@ -27,7 +29,7 @@ static inline void tcaSelect(uint8_t ch) {
   Wire.endTransmission();
 }
 #define OLED_SELECT() tcaSelect(SCREEN_CHANNEL)
-#define RTC_SELECT()  tcaSelect(SCREEN_CHANNEL)  // RTC shares CH7
+#define RTC_SELECT()  tcaSelect(SCREEN_CHANNEL)
 #define UNO_R4_CHANNEL 4      // TCA9548A channel for external Uno R4
 #define UNO_R4_ADDR    0x08   // I2C address of the Uno R4
 #define UNO_R4_SELECT() tcaSelect(UNO_R4_CHANNEL)
@@ -54,6 +56,12 @@ const uint8_t perChannelAddr[SENSORS_PER_CHANNEL] = { 0x30, 0x31, 0x32 };
 
 VL53L1X sensors[SENSOR_COUNT];
 
+volatile bool updateFlag = false;
+volatile bool shutdownFlag = false;
+
+void timerISR() { updateFlag = true; }
+void switchISR() { if (digitalRead(SWITCH_DETECT_PIN) == HIGH) shutdownFlag = true; }
+
 // -------------------- STEP/DIR DRIVER --------------------
 // New driver: STEP on pin 33, DIR on pin 31
 #define STEP_PIN       33
@@ -64,6 +72,13 @@ const int STEPS_90 = (STEPS_PER_REV * MICROSTEPS) / 4;  // quarter turn
 
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 600;   // high/low pulse width
+
+// --- state for motor trigger & switch edge ---
+unsigned long lastMoveMs = 0;
+const unsigned long moveCooldownMs = 1500;
+const uint16_t TRIGGER_MM = 150;
+const uint8_t  REQ_CONSEC  = 3;
+uint8_t s1HitCount = 0;
 
 // --- tiny sleeping bird bitmap (32x16) ---
 const uint8_t BIRD_W = 64, BIRD_H = 64;
@@ -256,6 +271,56 @@ bool sendDistancesFramed(const uint16_t *vals) {
 }
 
 
+void readAndSend() {
+  // Keep RTC time updated even if not displayed
+  RTC_SELECT();
+  rtc.now();
+
+  uint16_t distances[SENSOR_COUNT];
+  uint8_t statuses[SENSOR_COUNT];
+  for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
+    tcaSelect(ch);
+    for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
+      uint8_t idx = ch * SENSORS_PER_CHANNEL + i;
+      sensors[idx].read();
+      distances[idx] = sensors[idx].ranging_data.range_mm;
+      statuses[idx]  = sensors[idx].ranging_data.range_status;
+    }
+  }
+
+  sendDistancesFramed(distances);
+
+  OLED_SELECT();
+  display.clearDisplay();
+  display.setTextSize(1);
+  for (uint8_t i = 0; i < SENSOR_COUNT; i += 2) {
+    uint8_t y = (i / 2) * 10;
+    display.setCursor(0, y);
+    display.print(F("S")); display.print(i + 1); display.print(F(":"));
+    if (statuses[i] == 0) display.print(distances[i]);
+    else display.print(F("--"));
+    display.setCursor(64, y);
+    display.print(F("S")); display.print(i + 2); display.print(F(":"));
+    if (statuses[i + 1] == 0) display.print(distances[i + 1]);
+    else display.print(F("--"));
+  }
+  display.display();
+
+  bool s1Valid = (statuses[0] == 0);
+  if (s1Valid && distances[0] < TRIGGER_MM) {
+    if (s1HitCount < 255) s1HitCount++;
+  } else {
+    s1HitCount = 0;
+  }
+
+  bool doMove = (s1HitCount >= REQ_CONSEC) && (millis() - lastMoveMs > moveCooldownMs);
+  if (doMove) {
+    motorStep(STEPS_90, true);
+    lastMoveMs = millis();
+    s1HitCount = 0;
+  }
+}
+
 // --- SHUTDOWN SEQUENCE ---
 void drawSleepingBird(int x,int y){
   OLED_SELECT();
@@ -294,19 +359,6 @@ void shutdownSequence(){
 
 
 
-// --- state for motor trigger & switch edge ---
-unsigned long lastMoveMs=0;
-const unsigned long moveCooldownMs=1500;
-const uint16_t TRIGGER_MM = 150;
-const uint8_t  REQ_CONSEC  = 3;
-uint8_t s1HitCount = 0;
-
-bool readSwitchOn() { return (digitalRead(SWITCH_DETECT_PIN) == LOW); } // LOW = ON
-bool prevSwOn = true;
-unsigned long swChangeMs = 0;
-
-
-
 // -------------------- SETUP/LOOP --------------------
 void setup() {
   Wire.begin();
@@ -321,6 +373,11 @@ void setup() {
   // Bring up rails BEFORE touching OLED
   pinMode(CHARGER_DETECT_PIN, INPUT);       // expects 0/5V from divider
   pinMode(SWITCH_DETECT_PIN,  INPUT_PULLUP);// LOW when switch ON (change to INPUT if externally driven)
+
+  attachPCINT(digitalPinToPCINT(SWITCH_DETECT_PIN), switchISR, CHANGE);
+
+  Timer1.initialize(100000); // 100ms intervals
+  Timer1.attachInterrupt(timerISR);
 
   // STEP/DIR outputs
   pinMode(STEP_PIN, OUTPUT);
@@ -350,6 +407,10 @@ void setup() {
   display.display();
   delay(1000);
 
+  // RTC
+  RTC_SELECT();
+  rtc.begin(); // assume time is already set
+
   // Put all sensors on all channels into reset first
   for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
     resetChannelGroup(ch);
@@ -373,23 +434,21 @@ void setup() {
   }
   
 
-  // RTC
-  RTC_SELECT();
-  rtc.begin(); // assume time is already set
-
-  // Uno R4 on channel 4
-  bool unoR4Ok = connectUnoR4();
+  // Uno R4 on channel 4 with 10s timeout
+  bool unoR4Ok = false;
+  unsigned long startAttempt = millis();
+  while (millis() - startAttempt < 10000 && !unoR4Ok) {
+    unoR4Ok = connectUnoR4();
+    if (!unoR4Ok) delay(500);
+  }
   tcaSelect(SCREEN_CHANNEL);
   display.clearDisplay();
   display.setCursor(0,0);
   display.print(F("UNO R4: "));
   display.println(unoR4Ok ? F("OK") : F("FAIL"));
   display.display();
-  delay(3000);
+  delay(1000);
   
-  // Initial switch state
-  prevSwOn = readSwitchOn();
-
   // Ready banner
   tcaSelect(SCREEN_CHANNEL);
   display.clearDisplay();
@@ -402,115 +461,13 @@ void setup() {
 
 
 void loop() {
-  // ---- Switch OFF detection with simple debounce ----
-  bool swOn = readSwitchOn();
-  if (swOn != prevSwOn){
-    swChangeMs = millis();
-    prevSwOn = swOn;
+  if (shutdownFlag) {
+    shutdownFlag = false;
+    shutdownSequence();
   }
-  // If it has been off (HIGH) for >80ms, begin shutdown
-  if (!swOn && (millis() - swChangeMs > 80)){
-    shutdownSequence();  // does not return
+  if (updateFlag) {
+    updateFlag = false;
+    readAndSend();
   }
-  // ---- time on first line ----
-  RTC_SELECT();
-  DateTime now = rtc.now();
-  char timebuf[9];
-  snprintf(timebuf, sizeof(timebuf), "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
-
-  OLED_SELECT();
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setCursor(0,0);
-  display.print(timebuf);
-
-  // --- Read S1..S3 on channel 0 only ---
-  // tcaSelect(0);
-  // sensors[0].read(); uint16_t d1 = sensors[0].ranging_data.range_mm; uint8_t st1 = sensors[0].ranging_data.range_status;
-  // sensors[1].read(); uint16_t d2 = sensors[1].ranging_data.range_mm; uint8_t st2 = sensors[1].ranging_data.range_status;
-  // sensors[2].read(); uint16_t d3 = sensors[2].ranging_data.range_mm; uint8_t st3 = sensors[2].ranging_data.range_status;
-  // --- Read all sensors ---
-  uint16_t distances[SENSOR_COUNT];
-  uint8_t statuses[SENSOR_COUNT];
-  for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
-    tcaSelect(ch);
-    for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
-      uint8_t idx = ch * SENSORS_PER_CHANNEL + i;
-      sensors[idx].read();
-      distances[idx] = sensors[idx].ranging_data.range_mm;
-      statuses[idx]  = sensors[idx].ranging_data.range_status;
-    }
-  }
-
-  // --- Send data to Uno R4 ---
-  if (!sendDistancesFramed(distances)) {
-    // OLED_SELECT();
-    // display.clearDisplay();
-    // display.setTextSize(1);
-    // display.setCursor(12, 10);
-    // display.println(F("No"));
-    // display.setCursor(12, 32);
-    // display.println(F("send:("));
-    // display.display();
-    // delay(100); // show it briefly
-  }
-
-  // ---- display S1..S3 ----
-  OLED_SELECT();
-  auto showLine = [&](uint8_t y, uint8_t sNum, uint16_t d, uint8_t st){
-    display.setCursor(0,y);
-    display.print(F("S")); display.print(sNum); display.print(F(": "));
-    if(st==0) { display.print(d); display.print(F(" mm")); }
-    else      { display.print(F("--")); }
-  };
-  // showLine(12,1,d1,st1);
-  // showLine(24,2,d2,st2);
-  // showLine(36,3,d3,st3);
-  showLine(12,1,distances[0],statuses[0]);
-  showLine(24,2,distances[1],statuses[1]);
-  showLine(36,3,distances[2],statuses[2]);
-
-  // --- Read control signals ---
-  bool powerHold = digitalRead(POWER_HOLD_PIN);      // output, but we can read back level
-  bool gate5v    = digitalRead(GATE_5V_PIN);
-  bool charger   = digitalRead(CHARGER_DETECT_PIN);  // HIGH = charger present
-  bool swOnEcho  = (digitalRead(SWITCH_DETECT_PIN) == LOW);
-
-  // --- Show control states (two lines at bottom) ---
-  
-  display.setCursor(0, 48);
-  display.print(F("PWR:")); display.print(powerHold ? F("ON ") : F("OFF"));
-  display.print(F(" 5V:")); display.print(gate5v ? F("ON") : F("OFF"));
-
-  display.setCursor(0, 58);
-  display.print(F("SW:"));  display.print(swOn ? F("ON ") : F("OFF "));
-  display.print(F(" CHG:")); display.print(charger ? F("YES") : F("NO"));
-
-  display.display();
-
-  // bool s1Valid = (st1 == 0);
-  // if(s1Valid && d1 < TRIGGER_MM) {
-  //   if(s1HitCount < 255) s1HitCount++;
-  bool s1Valid = (statuses[0] == 0);
-  if (s1Valid && distances[0] < TRIGGER_MM) {
-    if (s1HitCount < 255) s1HitCount++;
-  } else {
-    s1HitCount = 0;
-  }
-
-  bool doMove = (s1HitCount >= REQ_CONSEC) && (millis() - lastMoveMs > moveCooldownMs);
-  if(doMove){
-    display.setCursor(80, 48);
-    display.print(F("MOVE +90"));
-    display.display();
-
-    motorStep(STEPS_90, true);
-    lastMoveMs = millis();
-    s1HitCount = 0;           // reset after acting
-  }
-
-  tcaSelect(SCREEN_CHANNEL);
-  display.display();
-  delay(40);
 }
 
