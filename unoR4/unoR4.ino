@@ -194,10 +194,10 @@ void loop() {
     mqttClient.endMessage();
   }
   delay(100);
-  mqttClient.poll(); 
-  mqttClient.beginMessage(random_topic); 
-  mqttClient.print(random(0, 100)); 
-  mqttClient.endMessage(); 
-  delay(1000);
+  // mqttClient.poll(); 
+  // mqttClient.beginMessage(random_topic); 
+  // mqttClient.print(random(0, 100)); 
+  // mqttClient.endMessage(); 
+  // delay(1000);
 }
 
