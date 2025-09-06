@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include "Arduino_LED_Matrix.h"
 #include <ArduinoMqttClient.h>
+#include <Ticker.h>
 
 
 const char ssid[] = "Ponce";      // replace with your network SSID
@@ -10,7 +11,6 @@ const char pass[] = "leoponce82";   // replace with your network password
 const char broker[] = "10.60.245.204";    // replace with MQTT broker IP or host
 const int  brokerPort = 1883;
 const char topic[] = "birdBox/unoR4/sensors";
-const char random_topic[] = "birdBox/unoR4/random";
 
 const int I2C_ADDRESS = 0x08;
 #define HANDSHAKE_SIZE 1
@@ -18,7 +18,6 @@ String answer = "K";
 #define SENSOR_COUNT    12
 #define PAYLOAD_BYTES   (SENSOR_COUNT * 2)  // 24
 volatile uint16_t rcvDistances[SENSOR_COUNT];
-volatile bool newSensorData = false;
 volatile uint8_t st = 0;          // 0: wait 'D', 1: off, 2: cnt, 3: data
 volatile uint8_t f_off = 0;
 volatile uint8_t f_cnt = 0;
@@ -36,7 +35,11 @@ ArduinoLEDMatrix matrix;
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
 
-uint16_t sensorValues[12];
+Ticker publishTicker;
+volatile bool publishFlag = false;
+volatile bool haveData = false;
+
+void publishISR() { publishFlag = true; }
 
 
 void onReceive(int) {
@@ -68,7 +71,7 @@ void onReceive(int) {
           gotMask |= (1u << (f_off + i));
         }
         // all 12 received at least once?
-        if (gotMask == 0x0FFF) { newSensorData = true; gotMask = 0; }
+        if (gotMask == 0x0FFF) { haveData = true; gotMask = 0; }
 
         st = 0; // ready for next frame
       }
@@ -170,22 +173,18 @@ void setup() {
   } else {
     Serial.println("MQTT connected");
     showStatus('C');
+    publishTicker.attach_ms(100, publishISR);
   }
 }
 
 void loop() {
   mqttClient.poll();
-  // mqttClient.beginMessage(topic);
-  // mqttClient.print(random(0, 100));
-  // mqttClient.endMessage();
-  // delay(1000);
-  if (newSensorData) {
+  if (publishFlag && haveData) {
+    publishFlag = false;
     noInterrupts();
     uint16_t snap[SENSOR_COUNT];
     for (int i = 0; i < SENSOR_COUNT; i++) snap[i] = rcvDistances[i];
-    newSensorData = false;
     interrupts();
-
     mqttClient.beginMessage(topic);
     for (int i = 0; i < SENSOR_COUNT; i++) {
       if (i) mqttClient.print(',');
@@ -193,11 +192,5 @@ void loop() {
     }
     mqttClient.endMessage();
   }
-  delay(100);
-  mqttClient.poll(); 
-  mqttClient.beginMessage(random_topic); 
-  mqttClient.print(random(0, 100)); 
-  mqttClient.endMessage(); 
-  delay(1000);
 }
 
