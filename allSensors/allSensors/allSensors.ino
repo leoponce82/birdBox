@@ -73,6 +73,13 @@ const int STEPS_90 = (STEPS_PER_REV * MICROSTEPS) / 4;  // quarter turn
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 600;   // high/low pulse width
 
+// --- state for motor trigger & switch edge ---
+unsigned long lastMoveMs = 0;
+const unsigned long moveCooldownMs = 1500;
+const uint16_t TRIGGER_MM = 150;
+const uint8_t  REQ_CONSEC  = 3;
+uint8_t s1HitCount = 0;
+
 // --- tiny sleeping bird bitmap (32x16) ---
 const uint8_t BIRD_W = 64, BIRD_H = 64;
 const uint8_t PROGMEM birdBitmap[4096] = {
@@ -361,7 +368,6 @@ uint8_t s1HitCount = 0;
 
 
 
-
 // -------------------- SETUP/LOOP --------------------
 void setup() {
   Wire.begin();
@@ -472,5 +478,6 @@ void loop() {
     updateFlag = false;
     readAndSend();
   }
+
 }
 
