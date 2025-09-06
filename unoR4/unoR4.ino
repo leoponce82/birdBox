@@ -35,11 +35,12 @@ ArduinoLEDMatrix matrix;
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
 
-Ticker publishTicker;
-volatile bool publishFlag = false;
+
+// publish interval in milliseconds
+const unsigned long PUBLISH_INTERVAL_MS = 100;
+unsigned long lastPublish = 0;
 volatile bool haveData = false;
 
-void publishISR() { publishFlag = true; }
 
 
 void onReceive(int) {
@@ -179,8 +180,9 @@ void setup() {
 
 void loop() {
   mqttClient.poll();
-  if (publishFlag && haveData) {
-    publishFlag = false;
+  if (haveData && millis() - lastPublish >= PUBLISH_INTERVAL_MS) {
+    lastPublish = millis();
+
     noInterrupts();
     uint16_t snap[SENSOR_COUNT];
     for (int i = 0; i < SENSOR_COUNT; i++) snap[i] = rcvDistances[i];
@@ -192,11 +194,6 @@ void loop() {
     }
     mqttClient.endMessage();
   }
-  delay(100);
-  // mqttClient.poll(); 
-  // mqttClient.beginMessage(random_topic); 
-  // mqttClient.print(random(0, 100)); 
-  // mqttClient.endMessage(); 
-  // delay(1000);
+
 }
 
