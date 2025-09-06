@@ -4,7 +4,6 @@
 #include <Adafruit_SSD1306.h>
 #include <RTClib.h>
 #include <TimerOne.h>
-#include <PinChangeInterrupt.h>
 
 // --- Power / control pins ---
 #define POWER_HOLD_PIN     26   // output, goes HIGH after boot
@@ -57,10 +56,8 @@ const uint8_t perChannelAddr[SENSORS_PER_CHANNEL] = { 0x30, 0x31, 0x32 };
 VL53L1X sensors[SENSOR_COUNT];
 
 volatile bool updateFlag = false;
-volatile bool shutdownFlag = false;
 
 void timerISR() { updateFlag = true; }
-void switchISR() { if (digitalRead(SWITCH_DETECT_PIN) == HIGH) shutdownFlag = true; }
 
 // -------------------- STEP/DIR DRIVER --------------------
 // New driver: STEP on pin 33, DIR on pin 31
@@ -376,8 +373,6 @@ void setup() {
   pinMode(CHARGER_DETECT_PIN, INPUT);       // expects 0/5V from divider
   pinMode(SWITCH_DETECT_PIN,  INPUT_PULLUP);// LOW when switch ON (change to INPUT if externally driven)
 
-  attachPCINT(digitalPinToPCINT(SWITCH_DETECT_PIN), switchISR, CHANGE);
-
   Timer1.initialize(100000); // 100ms intervals
   Timer1.attachInterrupt(timerISR);
 
@@ -463,14 +458,12 @@ void setup() {
 
 
 void loop() {
-  if (shutdownFlag) {
-    shutdownFlag = false;
+  if (digitalRead(SWITCH_DETECT_PIN) == HIGH) {
     shutdownSequence();
   }
   if (updateFlag) {
     updateFlag = false;
     readAndSend();
   }
-
 }
 
