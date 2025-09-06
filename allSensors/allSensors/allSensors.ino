@@ -31,6 +31,8 @@ static inline void tcaSelect(uint8_t ch) {
 #define UNO_R4_CHANNEL 4      // TCA9548A channel for external Uno R4
 #define UNO_R4_ADDR    0x08   // I2C address of the Uno R4
 #define UNO_R4_SELECT() tcaSelect(UNO_R4_CHANNEL)
+#define HANDSHAKE_SIZE 1
+
 // -------------------- OLED instance --------------------
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 RTC_DS3231 rtc;
@@ -39,6 +41,7 @@ RTC_DS3231 rtc;
 #define SENSOR_CHANNELS     4            // channels 0..3 used for sensors
 #define SENSORS_PER_CHANNEL 3
 #define SENSOR_COUNT        (SENSOR_CHANNELS * SENSORS_PER_CHANNEL) // 12
+uint16_t distances[SENSOR_COUNT]; // SENSOR_COUNT == 12
 
 // XSHUT pins for sensors 1..12 (in order). NOTE: pin 1 is TX0 on Mega; avoid Serial while using it.
 const uint8_t xshutPins[SENSOR_COUNT] = {
@@ -151,9 +154,107 @@ void resetChannelGroup(uint8_t ch) {
 
 bool connectUnoR4() {
   UNO_R4_SELECT();
-  Wire.beginTransmission(UNO_R4_ADDR);
-  return (Wire.endTransmission() == 0);
+  delay(3);
+
+  // Pure read triggers onRequest() on the Uno
+  if (Wire.requestFrom(UNO_R4_ADDR, (uint8_t)1) != 1) return false;
+  char k = Wire.read();
+
+  // Optional: OLED print
+  tcaSelect(SCREEN_CHANNEL);
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.print(F("UNO R4: "));
+  display.println(k);
+  display.display();
+
+  return (k == 'K');
 }
+
+
+
+// Sends header + 12 uint16_t as little-endian (lo,hi)
+bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
+  UNO_R4_SELECT();
+  delay(3); // TCA settle
+
+  Wire.beginTransmission(UNO_R4_ADDR);
+  for (uint8_t i = 0; i < count; i++) {
+    uint16_t v = vals[i];
+    Wire.write((uint8_t)(v & 0xFF));        // low byte
+    Wire.write((uint8_t)((v >> 8) & 0xFF)); // high byte
+  }
+  uint8_t err = Wire.endTransmission();
+  if (err != 0) {
+    OLED_SELECT();
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setCursor(12, 10);
+    display.println(F("No"));
+    display.setCursor(12, 32);
+    display.println(F("send:("));
+    display.display();
+    delay(1000); // show it briefly
+  }
+  return (err == 0);
+}
+bool sendDistancesToR4_chunked(const uint16_t* vals) {
+  for (uint8_t off = 0; off < SENSOR_COUNT; off += 6) { // 6 values = 12 bytes
+    UNO_R4_SELECT();
+    delay(3);
+
+    Wire.beginTransmission(UNO_R4_ADDR);
+    for (uint8_t i = 0; i < 6; i++) {
+      uint16_t v = vals[off + i];
+      Wire.write((uint8_t)(v & 0xFF));
+      Wire.write((uint8_t)(v >> 8));
+    }
+    uint8_t err = Wire.endTransmission();
+    if (err) {
+      // show err on OLED if you want
+      return false;
+    }
+    delayMicroseconds(200); // tiny gap
+  }
+  return true;
+}
+
+// Send distances in framed chunks (4 values per frame)
+bool sendDistancesFramed(const uint16_t *vals) {
+  const uint8_t CHUNK = 4;  // 4 values = 8 data bytes + 3 header = 11 total
+  for (uint8_t off = 0; off < SENSOR_COUNT; off += CHUNK) {
+    uint8_t cnt = (off + CHUNK <= SENSOR_COUNT) ? CHUNK : (SENSOR_COUNT - off);
+
+    UNO_R4_SELECT();
+    delay(3); // TCA settle
+
+    Wire.beginTransmission(UNO_R4_ADDR);
+    Wire.write('D');        // header
+    Wire.write(off);        // start index
+    Wire.write(cnt);        // count
+
+    for (uint8_t i = 0; i < cnt; i++) {
+      uint16_t v = vals[off + i];
+      Wire.write((uint8_t)(v & 0xFF));       // low byte
+      Wire.write((uint8_t)((v >> 8) & 0xFF));// high byte
+    }
+
+    uint8_t err = Wire.endTransmission();    // 0 = OK
+    if (err != 0) {
+      // Show exact error code to help if this ever trips again
+      tcaSelect(SCREEN_CHANNEL);
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setCursor(0, 0); display.print(F("I2C send ERR=")); display.println(err); // 2=NACK addr, 3=NACK data
+      display.display();
+      return false;
+    }
+
+    delayMicroseconds(200); // small gap between frames
+  }
+  return true;
+}
+
 
 // --- SHUTDOWN SEQUENCE ---
 void drawSleepingBird(int x,int y){
@@ -209,6 +310,8 @@ unsigned long swChangeMs = 0;
 // -------------------- SETUP/LOOP --------------------
 void setup() {
   Wire.begin();
+  Wire.setClock(100000); // keep it conservative and rock solid
+
   // Power/Control pins
   pinMode(POWER_HOLD_PIN, OUTPUT);
   pinMode(GATE_5V_PIN,   OUTPUT);
@@ -282,7 +385,7 @@ void setup() {
   display.print(F("UNO R4: "));
   display.println(unoR4Ok ? F("OK") : F("FAIL"));
   display.display();
-  delay(400);
+  delay(3000);
   
   // Initial switch state
   prevSwOn = readSwitchOn();
@@ -322,11 +425,35 @@ void loop() {
   display.print(timebuf);
 
   // --- Read S1..S3 on channel 0 only ---
-  tcaSelect(0);
-  sensors[0].read(); uint16_t d1 = sensors[0].ranging_data.range_mm; uint8_t st1 = sensors[0].ranging_data.range_status;
-  sensors[1].read(); uint16_t d2 = sensors[1].ranging_data.range_mm; uint8_t st2 = sensors[1].ranging_data.range_status;
-  sensors[2].read(); uint16_t d3 = sensors[2].ranging_data.range_mm; uint8_t st3 = sensors[2].ranging_data.range_status;
+  // tcaSelect(0);
+  // sensors[0].read(); uint16_t d1 = sensors[0].ranging_data.range_mm; uint8_t st1 = sensors[0].ranging_data.range_status;
+  // sensors[1].read(); uint16_t d2 = sensors[1].ranging_data.range_mm; uint8_t st2 = sensors[1].ranging_data.range_status;
+  // sensors[2].read(); uint16_t d3 = sensors[2].ranging_data.range_mm; uint8_t st3 = sensors[2].ranging_data.range_status;
+  // --- Read all sensors ---
+  uint16_t distances[SENSOR_COUNT];
+  uint8_t statuses[SENSOR_COUNT];
+  for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
+    tcaSelect(ch);
+    for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
+      uint8_t idx = ch * SENSORS_PER_CHANNEL + i;
+      sensors[idx].read();
+      distances[idx] = sensors[idx].ranging_data.range_mm;
+      statuses[idx]  = sensors[idx].ranging_data.range_status;
+    }
+  }
 
+  // --- Send data to Uno R4 ---
+  if (!sendDistancesFramed(distances)) {
+    // OLED_SELECT();
+    // display.clearDisplay();
+    // display.setTextSize(1);
+    // display.setCursor(12, 10);
+    // display.println(F("No"));
+    // display.setCursor(12, 32);
+    // display.println(F("send:("));
+    // display.display();
+    // delay(100); // show it briefly
+  }
 
   // ---- display S1..S3 ----
   OLED_SELECT();
@@ -336,9 +463,12 @@ void loop() {
     if(st==0) { display.print(d); display.print(F(" mm")); }
     else      { display.print(F("--")); }
   };
-  showLine(12,1,d1,st1);
-  showLine(24,2,d2,st2);
-  showLine(36,3,d3,st3);
+  // showLine(12,1,d1,st1);
+  // showLine(24,2,d2,st2);
+  // showLine(36,3,d3,st3);
+  showLine(12,1,distances[0],statuses[0]);
+  showLine(24,2,distances[1],statuses[1]);
+  showLine(36,3,distances[2],statuses[2]);
 
   // --- Read control signals ---
   bool powerHold = digitalRead(POWER_HOLD_PIN);      // output, but we can read back level
@@ -358,9 +488,12 @@ void loop() {
 
   display.display();
 
-  bool s1Valid = (st1 == 0);
-  if(s1Valid && d1 < TRIGGER_MM) {
-    if(s1HitCount < 255) s1HitCount++;
+  // bool s1Valid = (st1 == 0);
+  // if(s1Valid && d1 < TRIGGER_MM) {
+  //   if(s1HitCount < 255) s1HitCount++;
+  bool s1Valid = (statuses[0] == 0);
+  if (s1Valid && distances[0] < TRIGGER_MM) {
+    if (s1HitCount < 255) s1HitCount++;
   } else {
     s1HitCount = 0;
   }
