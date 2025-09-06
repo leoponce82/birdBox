@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include "Arduino_LED_Matrix.h"
 #include <ArduinoMqttClient.h>
+#include <Ticker.h>
 
 
 const char ssid[] = "Ponce";      // replace with your network SSID
@@ -34,10 +35,12 @@ ArduinoLEDMatrix matrix;
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
 
+
 // publish interval in milliseconds
 const unsigned long PUBLISH_INTERVAL_MS = 100;
 unsigned long lastPublish = 0;
 volatile bool haveData = false;
+
 
 
 void onReceive(int) {
@@ -171,6 +174,7 @@ void setup() {
   } else {
     Serial.println("MQTT connected");
     showStatus('C');
+    publishTicker.attach_ms(100, publishISR);
   }
 }
 
@@ -178,6 +182,7 @@ void loop() {
   mqttClient.poll();
   if (haveData && millis() - lastPublish >= PUBLISH_INTERVAL_MS) {
     lastPublish = millis();
+
     noInterrupts();
     uint16_t snap[SENSOR_COUNT];
     for (int i = 0; i < SENSOR_COUNT; i++) snap[i] = rcvDistances[i];
@@ -189,5 +194,6 @@ void loop() {
     }
     mqttClient.endMessage();
   }
+
 }
 

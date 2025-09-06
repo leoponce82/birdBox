@@ -359,6 +359,15 @@ void shutdownSequence(){
 
 
 
+// --- state for motor trigger & switch edge ---
+unsigned long lastMoveMs=0;
+const unsigned long moveCooldownMs=1500;
+const uint16_t TRIGGER_MM = 150;
+const uint8_t  REQ_CONSEC  = 3;
+uint8_t s1HitCount = 0;
+
+
+
 // -------------------- SETUP/LOOP --------------------
 void setup() {
   Wire.begin();
@@ -469,5 +478,6 @@ void loop() {
     updateFlag = false;
     readAndSend();
   }
+
 }
 
