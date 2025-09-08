@@ -187,10 +187,12 @@ void loop() {
     for (int i = 0; i < SENSOR_COUNT; i++) snap[i] = rcvDistances[i];
     interrupts();
     mqttClient.beginMessage(topic);
+    mqttClient.print("{\"distances\":[");
     for (int i = 0; i < SENSOR_COUNT; i++) {
       if (i) mqttClient.print(',');
       mqttClient.print(snap[i]);
     }
+    mqttClient.print("]}");
     mqttClient.endMessage();
   }
 
