@@ -5,6 +5,7 @@ Connects to a local broker and prints any messages published on the
 `unoR4/random` topic.
 """
 
+import json
 import paho.mqtt.client as mqtt
 
 BROKER = "10.60.245.204"  # replace with broker IP if not local
@@ -18,8 +19,9 @@ def on_connect(client, userdata, flags, rc):
 
 
 def on_message(client, userdata, msg):
-    """Print incoming MQTT messages."""
-    print(f"{msg.topic}: {msg.payload.decode()}")
+    """Print incoming MQTT messages as JSON."""
+    payload = json.loads(msg.payload.decode())
+    print(f"{msg.topic}: {payload}")
 
 
 client = mqtt.Client()
