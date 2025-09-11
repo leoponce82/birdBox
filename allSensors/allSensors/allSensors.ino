@@ -384,23 +384,23 @@ void setup() {
   // Now init OLED on its TCA channel
   
   tcaSelect(SCREEN_CHANNEL);
-  delay(500);  // let the mux settle
+  delay(50);  // let the mux settle
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println(F("SSD1306 allocation failed"));
     for(;;); // Don't proceed, loop forever
   }
   display.display();
-  delay(2000);
+  delay(200);
 
 
   // OLED
   tcaSelect(SCREEN_CHANNEL);
-  // display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
+  display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS);
   display.clearDisplay();
   display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0,0);
-  display.println(F("Booting..."));
+  display.println(F("Hello bird..."));
   display.display();
   delay(1000);
 

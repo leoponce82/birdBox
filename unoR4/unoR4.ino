@@ -5,10 +5,10 @@
 #include <Ticker.h>
 
 
-const char ssid[] = "Ponce";      // replace with your network SSID
+const char ssid[] = "PONCE-SNOW";      // replace with your network SSID
 const char pass[] = "leoponce82";   // replace with your network password
 
-const char broker[] = "10.60.245.204";    // replace with MQTT broker IP or host
+const char broker[] = "192.168.137.169";    // replace with MQTT broker IP or host
 const int  brokerPort = 1883;
 const char topic[] = "birdBox/unoR4/sensors";
 
