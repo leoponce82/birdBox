@@ -8,7 +8,7 @@ Connects to a local broker and prints any messages published on the
 import json
 import paho.mqtt.client as mqtt
 
-BROKER = "10.60.245.204"  # replace with broker IP if not local
+BROKER = "192.168.137.169"  # replace with broker IP if not local
 TOPIC = "birdBox/unoR4/sensors"
 
 
