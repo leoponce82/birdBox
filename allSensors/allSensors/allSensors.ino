@@ -60,12 +60,17 @@ volatile bool updateFlag = false;
 void timerISR() { updateFlag = true; }
 
 // -------------------- STEP/DIR DRIVER --------------------
-// New driver: STEP on pin 33, DIR on pin 31
+// Existing driver: STEP on pin 33, DIR on pin 31
 #define STEP_PIN       33
 #define DIR_PIN        31
+// Second driver: STEP on pin 34, DIR on pin 36
+#define STEP_PIN2      34
+#define DIR_PIN2       36
 #define MICROSTEPS      8     // set to the hardware microstep setting (1,2,4,8,16, ...)
-#define STEPS_PER_REV 200     // 1.8° motor
-const int STEPS_90 = (STEPS_PER_REV * MICROSTEPS) / 4;  // quarter turn
+#define STEPS_PER_REV      200     // 1.8° motor
+#define STEPS_PER_REV_FOOD  64     // gear motor for food dispenser
+const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter turn main motor
+const int STEPS_90_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 4;  // quarter turn food motor
 
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 600;   // high/low pulse width
@@ -76,6 +81,9 @@ const unsigned long moveCooldownMs = 1500;
 const uint16_t TRIGGER_MM = 150;
 const uint8_t  REQ_CONSEC  = 3;
 uint8_t s1HitCount = 0;
+
+// Hall effect sensor pins: H1..H4 on 17,16,15,14 respectively
+const uint8_t hallPins[4] = {17, 16, 15, 14};
 
 // --- tiny sleeping bird bitmap (32x16) ---
 const uint8_t BIRD_W = 64, BIRD_H = 64;
@@ -130,6 +138,17 @@ void motorStep(int steps, bool dirCW) {
     digitalWrite(STEP_PIN, HIGH);
     delayMicroseconds(STEP_PULSE_US);
     digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(STEP_PULSE_US);
+  }
+}
+
+void motorStepFood(int steps, bool dirCW) {
+  digitalWrite(DIR_PIN2, dirCW ? HIGH : LOW);
+  delayMicroseconds(2); // DIR setup time
+  for (int i = 0; i < steps; i++) {
+    digitalWrite(STEP_PIN2, HIGH);
+    delayMicroseconds(STEP_PULSE_US);
+    digitalWrite(STEP_PIN2, LOW);
     delayMicroseconds(STEP_PULSE_US);
   }
 }
@@ -301,6 +320,14 @@ void readAndSend() {
     if (statuses[i + 1] == 0) display.print(distances[i + 1]);
     else display.print(F("--"));
   }
+  display.setCursor(0,56);
+  display.print(F("Hall:"));
+  for (uint8_t h = 0; h < 4; h++) {
+    if (digitalRead(hallPins[h]) == LOW) {
+      display.print(F(" "));
+      display.print(h + 1);
+    }
+  }
   display.display();
 
   bool s1Valid = (statuses[0] == 0);
@@ -313,6 +340,7 @@ void readAndSend() {
   bool doMove = (s1HitCount >= REQ_CONSEC) && (millis() - lastMoveMs > moveCooldownMs);
   if (doMove) {
     motorStep(STEPS_90, true);
+    motorStepFood(STEPS_90_FOOD, true);
     lastMoveMs = millis();
     s1HitCount = 0;
   }
@@ -380,6 +408,13 @@ void setup() {
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   digitalWrite(STEP_PIN, LOW);
+  pinMode(STEP_PIN2, OUTPUT);
+  pinMode(DIR_PIN2, OUTPUT);
+  digitalWrite(STEP_PIN2, LOW);
+
+  for (uint8_t i = 0; i < 4; i++) {
+    pinMode(hallPins[i], INPUT_PULLUP);
+  }
 
   // Now init OLED on its TCA channel
   
