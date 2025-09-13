@@ -74,6 +74,7 @@ const int STEPS_90_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 4;  // quarter tur
 
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 600;   // high/low pulse width
+const unsigned int STEP_PULSE_FOOD_US = 1800; // high/low pulse width for food motor
 
 // --- state for motor trigger & switch edge ---
 unsigned long lastMoveMs = 0;
@@ -147,9 +148,9 @@ void motorStepFood(int steps, bool dirCW) {
   delayMicroseconds(2); // DIR setup time
   for (int i = 0; i < steps; i++) {
     digitalWrite(STEP_PIN2, HIGH);
-    delayMicroseconds(STEP_PULSE_US);
+    delayMicroseconds(STEP_PULSE_FOOD_US);
     digitalWrite(STEP_PIN2, LOW);
-    delayMicroseconds(STEP_PULSE_US);
+    delayMicroseconds(STEP_PULSE_FOOD_US);
   }
 }
 
