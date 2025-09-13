@@ -66,9 +66,11 @@ void timerISR() { updateFlag = true; }
 // Second driver: STEP on pin 34, DIR on pin 36
 #define STEP_PIN2      34
 #define DIR_PIN2       36
+#define EN_PIN         35
+#define EN_PIN2        37
 #define MICROSTEPS      8     // set to the hardware microstep setting (1,2,4,8,16, ...)
 #define STEPS_PER_REV      200     // 1.8° motor
-#define STEPS_PER_REV_FOOD  64     // gear motor for food dispenser
+#define STEPS_PER_REV_FOOD  516     // gear motor for food dispenser
 const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter turn main motor
 const int STEPS_90_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 4;  // quarter turn food motor
 
@@ -133,6 +135,7 @@ void oledPrintf(uint8_t x, uint8_t y, const __FlashStringHelper* label, int valu
 }
 
 void motorStep(int steps, bool dirCW) {
+  digitalWrite(EN_PIN, LOW); // enable driver
   digitalWrite(DIR_PIN, dirCW ? HIGH : LOW);
   delayMicroseconds(2); // DIR setup time
   for (int i = 0; i < steps; i++) {
@@ -141,9 +144,11 @@ void motorStep(int steps, bool dirCW) {
     digitalWrite(STEP_PIN, LOW);
     delayMicroseconds(STEP_PULSE_US);
   }
+  digitalWrite(EN_PIN, HIGH); // disable driver to remove holding torque
 }
 
 void motorStepFood(int steps, bool dirCW) {
+  digitalWrite(EN_PIN2, LOW); // enable driver
   digitalWrite(DIR_PIN2, dirCW ? HIGH : LOW);
   delayMicroseconds(2); // DIR setup time
   for (int i = 0; i < steps; i++) {
@@ -152,6 +157,7 @@ void motorStepFood(int steps, bool dirCW) {
     digitalWrite(STEP_PIN2, LOW);
     delayMicroseconds(STEP_PULSE_FOOD_US);
   }
+  digitalWrite(EN_PIN2, HIGH); // disable driver to remove holding torque
 }
 
 bool initSensorOn(uint8_t ch, uint8_t idxInCh) {
@@ -412,6 +418,10 @@ void setup() {
   pinMode(STEP_PIN2, OUTPUT);
   pinMode(DIR_PIN2, OUTPUT);
   digitalWrite(STEP_PIN2, LOW);
+  pinMode(EN_PIN, OUTPUT);
+  digitalWrite(EN_PIN, HIGH); // disable driver at start
+  pinMode(EN_PIN2, OUTPUT);
+  digitalWrite(EN_PIN2, HIGH); // disable food driver at start
 
   for (uint8_t i = 0; i < 4; i++) {
     pinMode(hallPins[i], INPUT_PULLUP);

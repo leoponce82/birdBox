@@ -26,12 +26,19 @@
 
 #define PRESENCE_PIN 40
 
-#define MOTOR_STEPS 200 //64 for Small stepper!
+#define MOTOR_STEPS 516 // steps per revolution for food motor
 #define MOTOR_PIN1 22
 #define MOTOR_PIN2 23
 #define MOTOR_PIN3 25
 #define MOTOR_PIN4 24
 Stepper stepper(MOTOR_STEPS, MOTOR_PIN1, MOTOR_PIN2, MOTOR_PIN3, MOTOR_PIN4);
+
+void disableStepper() {
+  digitalWrite(MOTOR_PIN1, LOW);
+  digitalWrite(MOTOR_PIN2, LOW);
+  digitalWrite(MOTOR_PIN3, LOW);
+  digitalWrite(MOTOR_PIN4, LOW);
+}
 
 
 #define LOG_INTERVAL 5000  
@@ -92,6 +99,7 @@ void setup() {
   // Serial.begin(9600);
   Wire.begin();
   stepper.setSpeed(50);
+  disableStepper();
 
  //  Initialize presence sensor Pin
   pinMode(PRESENCE_PIN, INPUT_PULLUP);
@@ -293,9 +301,9 @@ void loop() {
       }
     }
 
-    // Rotate stepper motor 90 degrees (50 steps)
-    // stepper.step(50); //good for nema17 motor
-    stepper.step(50);
+    // Rotate stepper motor 90 degrees (129 steps)
+    stepper.step(129);
+    disableStepper();
     // Resume sensors
     for (uint8_t ch = 0; ch < CHANNEL_COUNT; ch++) {
       tcaSelect(ch);
@@ -308,10 +316,7 @@ void loop() {
 
     } else {
       // digitalWrite(LED_BUILTIN, LOW);  // Turn off LED
-      digitalWrite(MOTOR_PIN1, LOW);
-      digitalWrite(MOTOR_PIN2, LOW);
-      digitalWrite(MOTOR_PIN3, LOW);
-      digitalWrite(MOTOR_PIN4, LOW);
+      disableStepper();
       
     }
 
