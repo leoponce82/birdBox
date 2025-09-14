@@ -88,12 +88,18 @@ const unsigned int STEP_PULSE_FOOD_US = 1800; // high/low pulse width for food m
 // --- state for motor trigger & switch edge ---
 unsigned long lastMoveMs = 0;
 const unsigned long moveCooldownMs = 1500;
-const uint16_t TRIGGER_MM = 150;
-const uint8_t  REQ_CONSEC  = 3;
-uint8_t s1HitCount = 0;
 
 // Hall effect sensor pins: H1..H4 on 17,16,15,14 respectively
 const uint8_t hallPins[4] = {17, 16, 15, 14};
+
+// Panel 4 buttons on analog pins A4..A7 (active LOW)
+const uint8_t BUTTON_COUNT = 4;
+const uint8_t buttonPins[BUTTON_COUNT] = {A4, A5, A6, A7};
+const unsigned long BUTTON_DEBOUNCE_MS = 50;
+bool buttonState[BUTTON_COUNT]     = {HIGH, HIGH, HIGH, HIGH};
+bool prevButtonState[BUTTON_COUNT] = {HIGH, HIGH, HIGH, HIGH};
+bool buttonReading[BUTTON_COUNT]   = {HIGH, HIGH, HIGH, HIGH};
+unsigned long buttonLastChange[BUTTON_COUNT] = {0, 0, 0, 0};
 
 // --- tiny sleeping bird bitmap (32x16) ---
 const uint8_t BIRD_W = 64, BIRD_H = 64;
@@ -300,6 +306,20 @@ bool sendDistancesFramed(const uint16_t *vals) {
   return true;
 }
 
+void updateButtons() {
+  unsigned long now = millis();
+  for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+    bool reading = digitalRead(buttonPins[i]);
+    if (reading != buttonReading[i]) {
+      buttonLastChange[i] = now;
+      buttonReading[i] = reading;
+    }
+    if ((now - buttonLastChange[i]) > BUTTON_DEBOUNCE_MS) {
+      buttonState[i] = reading;
+    }
+  }
+}
+
 
 void readAndSend() {
   // Keep RTC time updated even if not displayed
@@ -343,21 +363,6 @@ void readAndSend() {
     }
   }
   display.display();
-
-  bool s1Valid = (statuses[0] == 0);
-  if (s1Valid && distances[0] < TRIGGER_MM) {
-    if (s1HitCount < 255) s1HitCount++;
-  } else {
-    s1HitCount = 0;
-  }
-
-  bool doMove = (s1HitCount >= REQ_CONSEC) && (millis() - lastMoveMs > moveCooldownMs);
-  if (doMove) {
-    motorStep(STEPS_90, true);
-    motorStepFood(STEPS_90_FOOD, true);
-    lastMoveMs = millis();
-    s1HitCount = 0;
-  }
 }
 
 // --- SHUTDOWN SEQUENCE ---
@@ -434,6 +439,10 @@ void setup() {
 
   for (uint8_t i = 0; i < 4; i++) {
     pinMode(hallPins[i], INPUT_PULLUP);
+  }
+
+  for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+    pinMode(buttonPins[i], INPUT_PULLUP);
   }
 
   // Now init OLED on its TCA channel
@@ -514,6 +523,16 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+
+  updateButtons();
+  if (prevButtonState[0] == HIGH && buttonState[0] == LOW && (now - lastMoveMs > moveCooldownMs)) {
+    motorStep(STEPS_90, true);
+    motorStepFood(STEPS_90_FOOD, true);
+    lastMoveMs = now;
+  }
+  for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+    prevButtonState[i] = buttonState[i];
+  }
 
   if (!shutdownInitiated && (now - startupMillis) > SWITCH_STARTUP_GRACE_MS) {
     if (digitalRead(SWITCH_DETECT_PIN) == HIGH) {
