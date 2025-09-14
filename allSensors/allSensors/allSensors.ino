@@ -66,8 +66,8 @@ void timerISR() { updateFlag = true; }
 // Second driver: STEP on pin 34, DIR on pin 36
 #define STEP_PIN2      34
 #define DIR_PIN2       36
-#define EN_PIN         35
-#define EN_PIN2        37
+#define EN_PIN         37
+#define EN_PIN2        30
 #define MICROSTEPS      8     // set to the hardware microstep setting (1,2,4,8,16, ...)
 #define STEPS_PER_REV      200     // 1.8° motor
 #define STEPS_PER_REV_FOOD  516     // gear motor for food dispenser
