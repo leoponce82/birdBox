@@ -57,6 +57,13 @@ VL53L1X sensors[SENSOR_COUNT];
 
 volatile bool updateFlag = false;
 
+// --- power switch debounce state ---
+const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 200;
+const unsigned long SWITCH_STARTUP_GRACE_MS = 1000;
+unsigned long switchHighStart = 0;
+unsigned long startupMillis = 0;
+bool shutdownInitiated = false;
+
 void timerISR() { updateFlag = true; }
 
 // -------------------- STEP/DIR DRIVER --------------------
@@ -398,6 +405,8 @@ void setup() {
   Wire.begin();
   Wire.setClock(100000); // keep it conservative and rock solid
 
+  startupMillis = millis();
+
   // Power/Control pins
   pinMode(POWER_HOLD_PIN, OUTPUT);
   pinMode(GATE_5V_PIN,   OUTPUT);
@@ -504,9 +513,21 @@ void setup() {
 
 
 void loop() {
-  if (digitalRead(SWITCH_DETECT_PIN) == HIGH) {
-    shutdownSequence();
+  unsigned long now = millis();
+
+  if (!shutdownInitiated && (now - startupMillis) > SWITCH_STARTUP_GRACE_MS) {
+    if (digitalRead(SWITCH_DETECT_PIN) == HIGH) {
+      if (switchHighStart == 0) {
+        switchHighStart = now;
+      } else if (now - switchHighStart >= SWITCH_DEBOUNCE_DELAY_MS) {
+        shutdownInitiated = true;
+        shutdownSequence();
+      }
+    } else {
+      switchHighStart = 0;
+    }
   }
+
   if (updateFlag) {
     updateFlag = false;
     readAndSend();
