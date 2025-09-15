@@ -92,18 +92,20 @@ const unsigned long moveCooldownMs = 1500;
 // Hall effect sensor pins: H1..H4 on 17,16,15,14 respectively
 const uint8_t hallPins[4] = {17, 16, 15, 14};
 
-// Button panels (active LOW). Existing panel 4 on A4..A7 plus new panel 3 on A8..A11
-const uint8_t BUTTON_COUNT = 8;
+// Button panels (active LOW). Panels are ordered 4,3,2,1 to preserve existing behavior that
+// watches the first entry for panel 4 button 1. Panels 4 & 3 use analog pins A4..A11, panels 2 & 1
+// use digital pins 49..42.
+const uint8_t BUTTON_COUNT = 16;
 const uint8_t PANEL_UNKNOWN = 0xFF;
-const uint8_t buttonPins[BUTTON_COUNT] = {A4, A5, A6, A7, A8, A9, A10, A11};
+const uint8_t buttonPins[BUTTON_COUNT] = {A4, A5, A6, A7, A8, A9, A10, A11, 49, 47, 45, 43, 48, 46, 44, 42};
 // PANEL_UNKNOWN marks legacy buttons where the panel number is not yet defined
-const uint8_t buttonPanels[BUTTON_COUNT] = {4, 4, 4, 4, 3, 3, 3, 3};
-const uint8_t buttonNumbers[BUTTON_COUNT] = {1, 2, 3, 4, 1, 2, 3, 4};
+const uint8_t buttonPanels[BUTTON_COUNT] = {4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1};
+const uint8_t buttonNumbers[BUTTON_COUNT] = {1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4};
 const unsigned long BUTTON_DEBOUNCE_MS = 50;
-uint8_t buttonState[BUTTON_COUNT]     = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
-uint8_t prevButtonState[BUTTON_COUNT] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
-uint8_t buttonReading[BUTTON_COUNT]   = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
-unsigned long buttonLastChange[BUTTON_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0};
+uint8_t buttonState[BUTTON_COUNT]     = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+uint8_t prevButtonState[BUTTON_COUNT] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+uint8_t buttonReading[BUTTON_COUNT]   = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+unsigned long buttonLastChange[BUTTON_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 // --- tiny sleeping bird bitmap (32x16) ---
 const uint8_t BIRD_W = 64, BIRD_H = 64;
