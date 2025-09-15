@@ -92,14 +92,18 @@ const unsigned long moveCooldownMs = 1500;
 // Hall effect sensor pins: H1..H4 on 17,16,15,14 respectively
 const uint8_t hallPins[4] = {17, 16, 15, 14};
 
-// Panel 4 buttons on analog pins A4..A7 (active LOW)
-const uint8_t BUTTON_COUNT = 4;
-const uint8_t buttonPins[BUTTON_COUNT] = {A4, A5, A6, A7};
+// Button panels (active LOW). Existing panel 4 on A4..A7 plus new panel 3 on A8..A11
+const uint8_t BUTTON_COUNT = 8;
+const uint8_t PANEL_UNKNOWN = 0xFF;
+const uint8_t buttonPins[BUTTON_COUNT] = {A4, A5, A6, A7, A8, A9, A10, A11};
+// PANEL_UNKNOWN marks legacy buttons where the panel number is not yet defined
+const uint8_t buttonPanels[BUTTON_COUNT] = {4, 4, 4, 4, 3, 3, 3, 3};
+const uint8_t buttonNumbers[BUTTON_COUNT] = {1, 2, 3, 4, 1, 2, 3, 4};
 const unsigned long BUTTON_DEBOUNCE_MS = 50;
-bool buttonState[BUTTON_COUNT]     = {HIGH, HIGH, HIGH, HIGH};
-bool prevButtonState[BUTTON_COUNT] = {HIGH, HIGH, HIGH, HIGH};
-bool buttonReading[BUTTON_COUNT]   = {HIGH, HIGH, HIGH, HIGH};
-unsigned long buttonLastChange[BUTTON_COUNT] = {0, 0, 0, 0};
+uint8_t buttonState[BUTTON_COUNT]     = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+uint8_t prevButtonState[BUTTON_COUNT] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+uint8_t buttonReading[BUTTON_COUNT]   = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+unsigned long buttonLastChange[BUTTON_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 // --- tiny sleeping bird bitmap (32x16) ---
 const uint8_t BIRD_W = 64, BIRD_H = 64;
@@ -309,7 +313,7 @@ bool sendDistancesFramed(const uint16_t *vals) {
 void updateButtons() {
   unsigned long now = millis();
   for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
-    bool reading = digitalRead(buttonPins[i]);
+    uint8_t reading = digitalRead(buttonPins[i]);
     if (reading != buttonReading[i]) {
       buttonLastChange[i] = now;
       buttonReading[i] = reading;
@@ -355,12 +359,22 @@ void readAndSend() {
     else display.print(F("--"));
   }
   display.setCursor(0,56);
-  display.print(F("Hall:"));
-  for (uint8_t h = 0; h < 4; h++) {
-    if (digitalRead(hallPins[h]) == LOW) {
-      display.print(F(" "));
-      display.print(h + 1);
+  int8_t pressedIndex = -1;
+  for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+    if (buttonState[i] == LOW) {
+      pressedIndex = i;
+      break;
     }
+  }
+  if (pressedIndex >= 0) {
+    display.print(F("Button "));
+    display.print(buttonNumbers[pressedIndex]);
+    if (buttonPanels[pressedIndex] != PANEL_UNKNOWN) {
+      display.print(F(", panel "));
+      display.print(buttonPanels[pressedIndex]);
+    }
+  } else {
+    display.print(F("Buttons idle"));
   }
   display.display();
 }
