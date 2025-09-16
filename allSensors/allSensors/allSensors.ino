@@ -101,7 +101,7 @@ const uint8_t PANEL_UNKNOWN = 0xFF;
 const uint8_t buttonPins[BUTTON_COUNT] = {A4, A5, A6, A7, A8, A9, A10, A11, 49, 47, 45, 43, 48, 46, 44, 42};
 // PANEL_UNKNOWN marks legacy buttons where the panel number is not yet defined
 const uint8_t buttonPanels[BUTTON_COUNT] = {4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1};
-const uint8_t buttonNumbers[BUTTON_COUNT] = {1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 4, 3, 2, 1};
+const uint8_t buttonNumbers[BUTTON_COUNT] = {1, 2, 4, 3, 1, 2, 4, 3, 1, 2, 4, 3, 3, 4, 2, 1};
 const unsigned long BUTTON_DEBOUNCE_MS = 50;
 uint8_t buttonState[BUTTON_COUNT]     = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
 uint8_t prevButtonState[BUTTON_COUNT] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
@@ -124,10 +124,12 @@ unsigned long sequenceLastInput[SIDE_COUNT];
 
 uint8_t currentTunnelSide = 1;
 
-const uint8_t DEFAULT_SEQUENCE_TEMPLATE[DEFAULT_SEQUENCE_LENGTH] = {1, 2, 4, 3};
+
+const uint8_t DEFAULT_SEQUENCE_TEMPLATE[DEFAULT_SEQUENCE_LENGTH] = {1, 2, 3, 4};
 
 const uint32_t SEQUENCE_STORAGE_MAGIC = 0xB105EED1;
-const uint8_t SEQUENCE_STORAGE_VERSION = 1;
+const uint8_t SEQUENCE_STORAGE_VERSION = 2;
+
 const int SEQUENCE_STORAGE_ADDR = 0;
 
 struct SequenceStorage {
@@ -195,10 +197,19 @@ void loadSequencesFromEEPROM() {
   SequenceStorage data;
   EEPROM.get(SEQUENCE_STORAGE_ADDR, data);
 
-  bool valid = (data.magic == SEQUENCE_STORAGE_MAGIC) &&
-               (data.version == SEQUENCE_STORAGE_VERSION);
+  bool valid = (data.magic == SEQUENCE_STORAGE_MAGIC);
+  bool needsMigration = false;
   if (valid) {
+    if (data.version == SEQUENCE_STORAGE_VERSION) {
+      // up-to-date
+    } else if (data.version == 1) {
+      needsMigration = true;
+    } else {
+      valid = false;
+    }
+  }
 
+  if (valid) {
     uint8_t expectedChecksum = data.computeChecksum();
 
     if (expectedChecksum != data.checksum) {
@@ -232,10 +243,19 @@ void loadSequencesFromEEPROM() {
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
     storedSequenceLengths[side] = data.lengths[side];
     for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
-      storedSequences[side][i] = data.sequences[side][i];
+      uint8_t value = data.sequences[side][i];
+      if (needsMigration) {
+        if (value == 3) value = 4;
+        else if (value == 4) value = 3;
+      }
+      storedSequences[side][i] = value;
     }
   }
   resetSequenceTracking();
+  if (needsMigration) {
+    saveSequencesToEEPROM();
+  }
+
 }
 
 enum SystemMode {
@@ -524,7 +544,8 @@ void showMenuSelectSide() {
   display.println(F("Menu: select side"));
   display.println(F("1=Side1 2=Side2"));
   display.println(F("3=Side3"));
-  display.println(F("4=Side4/reset"));
+  display.println(F("4=Side4"));
+
   display.display();
 }
 
@@ -581,6 +602,33 @@ void showMenuConfirm() {
   display.println(F("1=Save 2=Again"));
   display.setCursor(0, 56);
   display.println(F("3=Menu 4=Opt"));
+  display.display();
+}
+
+void showMenuMoreOptions() {
+  OLED_SELECT();
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println(F("Options"));
+  display.println(F("1=Factory reset"));
+  display.println(F("2=Exit menu"));
+  display.println(F("3/4=Back"));
+  display.display();
+}
+
+void showMenuResetConfirm() {
+  OLED_SELECT();
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println(F("Reset sequences?"));
+  display.println(F("1=Yes 2=No"));
+  display.println(F("Restore defaults"));
+  display.println(F("3=Exit 4=Back"));
+
   display.display();
 }
 
@@ -780,28 +828,21 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         currentMode = MODE_MENU_SELECT_SIDE;
         showMenuSelectSide();
       } else if (number == 4) {
-        menuSelectedSide = 0;
-        resetMenuSequenceBuffer();
+
         currentMode = MODE_MENU_MORE_OPTIONS;
         showMenuMoreOptions();
       }
       break;
     case MODE_MENU_MORE_OPTIONS:
       if (number == 1) {
-        menuSelectedSide = 4;
-        resetMenuSequenceBuffer();
-        currentMode = MODE_MENU_ENTER_SEQUENCE;
-        showMenuEnterSequence();
-      } else if (number == 2) {
         currentMode = MODE_MENU_RESET_CONFIRM;
         showMenuResetConfirm();
-      } else if (number == 3) {
+      } else if (number == 2) {
         exitMenu();
-      } else if (number == 4) {
-        menuSelectedSide = 0;
-        resetMenuSequenceBuffer();
-        currentMode = MODE_MENU_SELECT_SIDE;
-        showMenuSelectSide();
+      } else if (number == 3 || number == 4) {
+        currentMode = MODE_MENU_CONFIRM;
+        showMenuConfirm();
+
       }
       break;
     case MODE_MENU_RESET_CONFIRM:
@@ -813,10 +854,9 @@ void handleButtonPress(uint8_t index, unsigned long now) {
       } else if (number == 3) {
         exitMenu();
       } else if (number == 4) {
-        menuSelectedSide = 0;
-        resetMenuSequenceBuffer();
-        currentMode = MODE_MENU_SELECT_SIDE;
-        showMenuSelectSide();
+        currentMode = MODE_MENU_MORE_OPTIONS;
+        showMenuMoreOptions();
+
       }
       break;
     default:
