@@ -618,34 +618,6 @@ void showMenuMoreOptions() {
   display.display();
 }
 
-void showMenuResetConfirm() {
-  OLED_SELECT();
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println(F("Reset sequences?"));
-  display.println(F("1=Yes 2=No"));
-  display.println(F("Restore defaults"));
-  display.println(F("3=Exit 4=Back"));
-
-  display.display();
-}
-
-void showMenuMoreOptions() {
-  OLED_SELECT();
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println(F("Menu options"));
-  display.println(F("1=Side 4"));
-  display.println(F("2=Factory reset"));
-  display.println(F("3=Exit menu"));
-  display.println(F("4=Back"));
-  display.display();
-}
-
 
 void showMenuResetConfirm() {
   displayMenuMessage(F("Reset sequences?"),
