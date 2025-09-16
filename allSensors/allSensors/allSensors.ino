@@ -136,23 +136,24 @@ struct SequenceStorage {
   uint8_t lengths[SIDE_COUNT];
   uint8_t sequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
   uint8_t checksum;
+
+  uint8_t computeChecksum() const {
+    uint16_t sum = 0;
+    sum += (uint8_t)(magic & 0xFF);
+    sum += (uint8_t)((magic >> 8) & 0xFF);
+    sum += (uint8_t)((magic >> 16) & 0xFF);
+    sum += (uint8_t)((magic >> 24) & 0xFF);
+    sum += version;
+    for (uint8_t side = 0; side < SIDE_COUNT; side++) {
+      sum += lengths[side];
+      for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
+        sum += sequences[side][i];
+      }
+    }
+    return (uint8_t)(sum & 0xFF);
+  }
 };
 
-uint8_t computeSequenceChecksum(const SequenceStorage& data) {
-  uint16_t sum = 0;
-  sum += (uint8_t)(data.magic & 0xFF);
-  sum += (uint8_t)((data.magic >> 8) & 0xFF);
-  sum += (uint8_t)((data.magic >> 16) & 0xFF);
-  sum += (uint8_t)((data.magic >> 24) & 0xFF);
-  sum += data.version;
-  for (uint8_t side = 0; side < SIDE_COUNT; side++) {
-    sum += data.lengths[side];
-    for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
-      sum += data.sequences[side][i];
-    }
-  }
-  return (uint8_t)(sum & 0xFF);
-}
 
 void resetSequenceTracking() {
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
@@ -185,7 +186,8 @@ void saveSequencesToEEPROM() {
       data.sequences[side][i] = storedSequences[side][i];
     }
   }
-  data.checksum = computeSequenceChecksum(data);
+  data.checksum = data.computeChecksum();
+
   EEPROM.put(SEQUENCE_STORAGE_ADDR, data);
 }
 
@@ -196,7 +198,9 @@ void loadSequencesFromEEPROM() {
   bool valid = (data.magic == SEQUENCE_STORAGE_MAGIC) &&
                (data.version == SEQUENCE_STORAGE_VERSION);
   if (valid) {
-    uint8_t expectedChecksum = computeSequenceChecksum(data);
+
+    uint8_t expectedChecksum = data.computeChecksum();
+
     if (expectedChecksum != data.checksum) {
       valid = false;
     }
@@ -593,6 +597,7 @@ void showMenuMoreOptions() {
   display.println(F("4=Back"));
   display.display();
 }
+
 
 void showMenuResetConfirm() {
   displayMenuMessage(F("Reset sequences?"),
