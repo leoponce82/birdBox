@@ -59,7 +59,7 @@ VL53L1X sensors[SENSOR_COUNT];
 volatile bool updateFlag = false;
 
 // --- power switch debounce state ---
-const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 50;
+const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 200;
 const unsigned long SWITCH_STARTUP_GRACE_MS = 1000;
 unsigned long switchHighStart = 0;
 unsigned long startupMillis = 0;
@@ -102,7 +102,7 @@ const uint8_t buttonPins[BUTTON_COUNT] = {A4, A5, A6, A7, A8, A9, A10, A11, 49, 
 // PANEL_UNKNOWN marks legacy buttons where the panel number is not yet defined
 const uint8_t buttonPanels[BUTTON_COUNT] = {4, 4, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1};
 const uint8_t buttonNumbers[BUTTON_COUNT] = {1, 2, 4, 3, 1, 2, 4, 3, 1, 2, 4, 3, 3, 4, 2, 1};
-const unsigned long BUTTON_DEBOUNCE_MS = 50;
+const unsigned long BUTTON_DEBOUNCE_MS = 5;
 uint8_t buttonState[BUTTON_COUNT]     = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
 uint8_t prevButtonState[BUTTON_COUNT] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
 uint8_t buttonReading[BUTTON_COUNT]   = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
