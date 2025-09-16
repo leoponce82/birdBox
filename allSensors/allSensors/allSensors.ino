@@ -6,8 +6,8 @@
 #include <TimerOne.h>
 #include <EEPROM.h>
 
-const unsigned long BUTTON_SCAN_INTERVAL_US = 10000; // 10 ms between button scans
-const uint8_t SENSOR_UPDATE_TICKS = 10;              // 10 * 10 ms = 100 ms sensor updates
+const unsigned long BUTTON_SCAN_INTERVAL_US = 50; // 10 ms between button scans
+const uint8_t SENSOR_UPDATE_TICKS = 20;              // 20 * 10 ms = 200 ms sensor updates = 5Hz
 
 volatile uint8_t buttonScanPending = 0;
 volatile bool sensorUpdateFlag = false;
@@ -1116,7 +1116,7 @@ void setup() {
   tcaSelect(SCREEN_CHANNEL);
   display.clearDisplay();
   display.setCursor(0,0);
-  display.println(F("All sensors ready."));
+  display.println(F("birdBox GO"));
   display.display();
   delay(1000);
 }
