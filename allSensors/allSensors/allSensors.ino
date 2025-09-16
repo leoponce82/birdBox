@@ -105,8 +105,13 @@ const unsigned int STEP_PULSE_FOOD_US = 1800; // high/low pulse width for food m
 unsigned long lastMoveMs = 0;
 const unsigned long moveCooldownMs = 1500;
 
-// Hall effect sensor pins: H1..H4 on 17,16,15,14 respectively
-const uint8_t hallPins[4] = {17, 16, 15, 14};
+// Hall effect alignment sensors by tunnel side (1..4)
+const uint8_t sideHallPins[4] = {
+  14, // Side 1 (formerly hall 4)
+  17, // Side 2 (formerly hall 1)
+  16, // Side 3 (formerly hall 2)
+  15  // Side 4 (formerly hall 3)
+};
 
 // Button panels (active LOW). Panels are ordered 4,3,2,1 to preserve existing behavior that
 // watches the first entry for panel 4 button 1. Panels 4 & 3 use analog pins A4..A11, panels 2 & 1
@@ -415,6 +420,74 @@ void motorStepFood(int steps, bool dirCW) {
     delayMicroseconds(STEP_PULSE_FOOD_US);
   }
   digitalWrite(EN_PIN2, HIGH); // disable driver to remove holding torque
+}
+
+bool isSideAligned(uint8_t side) {
+  if (side < 1 || side > SIDE_COUNT) return false;
+  uint8_t hallPin = sideHallPins[side - 1];
+  return digitalRead(hallPin) == LOW;
+}
+
+bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) {
+  if (digitalRead(hallPin) == LOW) {
+    return true;
+  }
+
+  bool aligned = false;
+  digitalWrite(EN_PIN, LOW);
+  digitalWrite(DIR_PIN, dirCW ? HIGH : LOW);
+  delayMicroseconds(2);
+  for (unsigned long step = 0; step < maxSteps; step++) {
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(STEP_PULSE_US);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(STEP_PULSE_US);
+    if (digitalRead(hallPin) == LOW) {
+      aligned = true;
+      break;
+    }
+  }
+  digitalWrite(EN_PIN, HIGH);
+  return aligned || digitalRead(hallPin) == LOW;
+}
+
+bool rotateTunnelToSide(uint8_t targetSide) {
+  if (targetSide < 1 || targetSide > SIDE_COUNT) return false;
+
+  uint8_t hallPin = sideHallPins[targetSide - 1];
+
+  if (isSideAligned(targetSide)) {
+    currentTunnelSide = targetSide;
+    return true;
+  }
+
+  uint8_t cwQuarterTurns = (targetSide + SIDE_COUNT - currentTunnelSide) % SIDE_COUNT;
+  uint8_t ccwQuarterTurns = (currentTunnelSide + SIDE_COUNT - targetSide) % SIDE_COUNT;
+
+  bool dirCW = true;
+  uint8_t quarterTurns = cwQuarterTurns;
+  if (ccwQuarterTurns < cwQuarterTurns) {
+    dirCW = false;
+    quarterTurns = ccwQuarterTurns;
+  }
+
+  if (quarterTurns == 0) {
+    quarterTurns = SIDE_COUNT;
+  }
+
+  unsigned long maxSteps = (unsigned long)quarterTurns * STEPS_90 + (STEPS_90 / 2);
+  bool aligned = stepMotorUntilAligned(hallPin, dirCW, maxSteps);
+
+  if (!aligned && quarterTurns != SIDE_COUNT) {
+    unsigned long fullRotationSteps = (unsigned long)SIDE_COUNT * STEPS_90 + (STEPS_90 / 2);
+    aligned = stepMotorUntilAligned(hallPin, dirCW, fullRotationSteps);
+  }
+
+  if (aligned) {
+    currentTunnelSide = targetSide;
+  }
+
+  return aligned;
 }
 
 bool initSensorOn(uint8_t ch, uint8_t idxInCh) {
@@ -749,13 +822,10 @@ void saveMenuSequence() {
 
 void deliverRewardForSide(uint8_t side) {
   if (side < 1 || side > SIDE_COUNT) return;
-  uint8_t target = side;
-  uint8_t cwSteps = (target + SIDE_COUNT - currentTunnelSide) % SIDE_COUNT;
-  if (cwSteps > 0) {
-    motorStep(STEPS_90 * cwSteps, true);
+  if (!rotateTunnelToSide(side)) {
+    return;
   }
   motorStepFood(STEPS_90_FOOD, true);
-  currentTunnelSide = target;
   lastMoveMs = millis();
 }
 
@@ -1033,8 +1103,8 @@ void setup() {
   pinMode(EN_PIN2, OUTPUT);
   digitalWrite(EN_PIN2, HIGH); // disable food driver at start
 
-  for (uint8_t i = 0; i < 4; i++) {
-    pinMode(hallPins[i], INPUT_PULLUP);
+  for (uint8_t i = 0; i < SIDE_COUNT; i++) {
+    pinMode(sideHallPins[i], INPUT_PULLUP);
   }
 
   for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
