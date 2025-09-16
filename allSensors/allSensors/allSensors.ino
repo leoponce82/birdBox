@@ -5,7 +5,13 @@
 #include <RTClib.h>
 #include <TimerOne.h>
 #include <EEPROM.h>
-#include <PinChangeInterrupt.h>
+
+const unsigned long BUTTON_SCAN_INTERVAL_US = 10000; // 10 ms between button scans
+const uint8_t SENSOR_UPDATE_TICKS = 10;              // 10 * 10 ms = 100 ms sensor updates
+
+volatile uint8_t buttonScanPending = 0;
+volatile bool sensorUpdateFlag = false;
+volatile uint8_t sensorUpdateTickCounter = 0;
 
 // --- Power / control pins ---
 #define POWER_HOLD_PIN     26   // output, goes HIGH after boot
@@ -57,8 +63,6 @@ const uint8_t perChannelAddr[SENSORS_PER_CHANNEL] = { 0x30, 0x31, 0x32 };
 
 VL53L1X sensors[SENSOR_COUNT];
 
-volatile bool updateFlag = false;
-
 // --- power switch debounce state ---
 const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 200;
 const unsigned long SWITCH_STARTUP_GRACE_MS = 1000;
@@ -66,7 +70,17 @@ unsigned long switchHighStart = 0;
 unsigned long startupMillis = 0;
 bool shutdownInitiated = false;
 
-void timerISR() { updateFlag = true; }
+void timerISR() {
+  if (buttonScanPending < 255) {
+    buttonScanPending++;
+  }
+
+  sensorUpdateTickCounter++;
+  if (sensorUpdateTickCounter >= SENSOR_UPDATE_TICKS) {
+    sensorUpdateTickCounter = 0;
+    sensorUpdateFlag = true;
+  }
+}
 
 // -------------------- STEP/DIR DRIVER --------------------
 // Existing driver: STEP on pin 33, DIR on pin 31
@@ -536,12 +550,13 @@ bool sendDistancesFramed(const uint16_t *vals) {
   return true;
 }
 
-void buttonISR() {
+void scanButtons() {
   unsigned long now = millis();
   uint8_t portValues[BUTTON_PORT_COUNT];
 
   for (uint8_t group = 0; group < BUTTON_PORT_COUNT; group++) {
-    portValues[group] = *buttonPortInputRegs[group];
+    volatile uint8_t *portReg = buttonPortInputRegs[group];
+    portValues[group] = portReg ? *portReg : 0xFF;
   }
 
   for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
@@ -1003,7 +1018,7 @@ void setup() {
   pinMode(CHARGER_DETECT_PIN, INPUT);       // expects 0/5V from divider
   pinMode(SWITCH_DETECT_PIN,  INPUT_PULLUP);// LOW when switch ON (change to INPUT if externally driven)
 
-  Timer1.initialize(100000); // 100ms intervals
+  Timer1.initialize(BUTTON_SCAN_INTERVAL_US); // 10ms button scan intervals
   Timer1.attachInterrupt(timerISR);
 
   // STEP/DIR outputs
@@ -1027,11 +1042,6 @@ void setup() {
   }
 
   initButtonPortMetadata();
-
-
-  for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
-    attachPCINT(digitalPinToPCINT(buttonPins[i]), buttonISR, CHANGE);
-  }
 
   loadSequencesFromEEPROM();
   currentTunnelSide = 1;
@@ -1114,6 +1124,23 @@ void setup() {
 
 
 void loop() {
+  uint8_t scansToProcess = 0;
+  bool performSensorUpdate = false;
+
+  noInterrupts();
+  scansToProcess = buttonScanPending;
+  buttonScanPending = 0;
+  if (sensorUpdateFlag) {
+    sensorUpdateFlag = false;
+    performSensorUpdate = true;
+  }
+  interrupts();
+
+  while (scansToProcess > 0) {
+    scanButtons();
+    scansToProcess--;
+  }
+
   unsigned long now = millis();
 
   bool hasPending = false;
@@ -1199,8 +1226,7 @@ void loop() {
     }
   }
 
-  if (updateFlag) {
-    updateFlag = false;
+  if (performSensorUpdate) {
     readAndSend();
   }
 }
