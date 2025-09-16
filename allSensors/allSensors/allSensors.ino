@@ -107,6 +107,39 @@ uint8_t prevButtonState[BUTTON_COUNT] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIG
 uint8_t buttonReading[BUTTON_COUNT]   = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
 unsigned long buttonLastChange[BUTTON_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
+// --- button sequence & menu state ---
+const uint8_t SIDE_COUNT = 4;
+const uint8_t MAX_SEQUENCE_LENGTH = 8;
+const uint8_t DEFAULT_SEQUENCE_LENGTH = 4;
+const unsigned long SEQUENCE_TIMEOUT_MS = 5000;
+
+uint8_t storedSequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
+uint8_t storedSequenceLengths[SIDE_COUNT];
+uint8_t sequenceProgress[SIDE_COUNT];
+unsigned long sequenceLastInput[SIDE_COUNT];
+
+uint8_t currentTunnelSide = 1;
+
+enum SystemMode {
+  MODE_IDLE,
+  MODE_MENU_SELECT_SIDE,
+  MODE_MENU_ENTER_SEQUENCE,
+  MODE_MENU_CONFIRM
+};
+
+SystemMode currentMode = MODE_IDLE;
+
+const unsigned long MENU_HOLD_MS = 3000;
+bool panel1MenuHoldActive = false;
+unsigned long menuHoldStart = 0;
+
+bool menuAwaitingRelease = false;
+uint8_t menuSelectedSide = 0;
+uint8_t menuSequenceBuffer[MAX_SEQUENCE_LENGTH];
+uint8_t menuSequenceLength = 0;
+
+const uint8_t panel1Indices[4] = {12, 13, 14, 15};
+
 // --- tiny sleeping bird bitmap (32x16) ---
 const uint8_t BIRD_W = 64, BIRD_H = 64;
 const uint8_t PROGMEM birdBitmap[4096] = {
@@ -327,6 +360,259 @@ void updateButtons() {
 }
 
 
+bool allPanel1Pressed() {
+  for (uint8_t i = 0; i < 4; i++) {
+    if (buttonState[panel1Indices[i]] != LOW) return false;
+  }
+  return true;
+}
+
+bool allPanel1Released() {
+  for (uint8_t i = 0; i < 4; i++) {
+    if (buttonState[panel1Indices[i]] == LOW) return false;
+  }
+  return true;
+}
+
+void resetMenuSequenceBuffer() {
+  menuSequenceLength = 0;
+  for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
+    menuSequenceBuffer[i] = 0;
+  }
+}
+
+void displayMenuMessage(const __FlashStringHelper* line1,
+                        const __FlashStringHelper* line2 = nullptr,
+                        const __FlashStringHelper* line3 = nullptr) {
+  OLED_SELECT();
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  if (line1) display.println(line1);
+  if (line2) display.println(line2);
+  if (line3) display.println(line3);
+  display.display();
+}
+
+void showMenuSelectSide() {
+  displayMenuMessage(F("Menu: select side"),
+                     F("Use panel 1"),
+                     F("buttons 1-4"));
+}
+
+void showMenuEnterSequence() {
+  OLED_SELECT();
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print(F("Side "));
+  display.print(menuSelectedSide);
+  display.println(F(" sequence"));
+  display.println(F("Enter 4 buttons"));
+
+  display.setTextSize(2);
+  display.setCursor(0, 24);
+  for (uint8_t i = 0; i < DEFAULT_SEQUENCE_LENGTH; i++) {
+    if (i < menuSequenceLength) {
+      display.print(menuSequenceBuffer[i]);
+    } else {
+      display.print('_');
+    }
+    if (i < DEFAULT_SEQUENCE_LENGTH - 1) display.print(' ');
+  }
+
+  display.setTextSize(1);
+  display.setCursor(0, 54);
+  display.print(F("Step "));
+  display.print(menuSequenceLength);
+  display.print(F("/"));
+  display.print(DEFAULT_SEQUENCE_LENGTH);
+  display.display();
+}
+
+void showMenuConfirm() {
+  OLED_SELECT();
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print(F("Side "));
+  display.print(menuSelectedSide);
+  display.println(F(" sequence"));
+
+  display.setTextSize(2);
+  display.setCursor(0, 24);
+  for (uint8_t i = 0; i < menuSequenceLength; i++) {
+    display.print(menuSequenceBuffer[i]);
+    if (i < menuSequenceLength - 1) display.print(' ');
+  }
+
+  display.setTextSize(1);
+  display.setCursor(0, 52);
+  display.println(F("1=Save 2=Again"));
+  display.display();
+}
+
+void enterMenu() {
+  currentMode = MODE_MENU_SELECT_SIDE;
+  menuAwaitingRelease = true;
+  menuSelectedSide = 0;
+  resetMenuSequenceBuffer();
+  panel1MenuHoldActive = false;
+  menuHoldStart = 0;
+  displayMenuMessage(F("Menu mode"),
+                     F("Release panel 1"),
+                     F("buttons to begin"));
+}
+
+void exitMenu() {
+  currentMode = MODE_IDLE;
+  menuAwaitingRelease = false;
+  menuSelectedSide = 0;
+  panel1MenuHoldActive = false;
+  menuHoldStart = 0;
+  resetMenuSequenceBuffer();
+}
+
+void saveMenuSequence() {
+  if (menuSelectedSide < 1 || menuSelectedSide > SIDE_COUNT) return;
+  uint8_t idx = menuSelectedSide - 1;
+  storedSequenceLengths[idx] = menuSequenceLength;
+  for (uint8_t i = 0; i < menuSequenceLength; i++) {
+    storedSequences[idx][i] = menuSequenceBuffer[i];
+  }
+  sequenceProgress[idx] = 0;
+  sequenceLastInput[idx] = 0;
+  displayMenuMessage(F("Sequence saved"),
+                     F("Returning to"),
+                     F("sensor view"));
+  delay(800);
+  exitMenu();
+}
+
+void deliverRewardForSide(uint8_t side) {
+  if (side < 1 || side > SIDE_COUNT) return;
+  uint8_t target = side;
+  uint8_t cwSteps = (target + SIDE_COUNT - currentTunnelSide) % SIDE_COUNT;
+  if (cwSteps > 0) {
+    motorStep(STEPS_90 * cwSteps, true);
+  }
+  motorStepFood(STEPS_90_FOOD, true);
+  currentTunnelSide = target;
+  lastMoveMs = millis();
+}
+
+void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now) {
+  if (panel == 0 || panel > SIDE_COUNT) return;
+  uint8_t idx = panel - 1;
+  uint8_t expectedLength = storedSequenceLengths[idx];
+  if (expectedLength == 0) return;
+
+  if (sequenceProgress[idx] > 0 && sequenceLastInput[idx] != 0 &&
+      now - sequenceLastInput[idx] > SEQUENCE_TIMEOUT_MS) {
+    sequenceProgress[idx] = 0;
+  }
+
+  if (sequenceProgress[idx] < expectedLength &&
+      buttonNumber == storedSequences[idx][sequenceProgress[idx]]) {
+    sequenceProgress[idx]++;
+  } else if (buttonNumber == storedSequences[idx][0]) {
+    sequenceProgress[idx] = 1;
+  } else {
+    sequenceProgress[idx] = 0;
+  }
+
+  sequenceLastInput[idx] = now;
+
+  if (sequenceProgress[idx] >= expectedLength) {
+    if (now - lastMoveMs > moveCooldownMs) {
+      deliverRewardForSide(panel);
+    }
+    sequenceProgress[idx] = 0;
+  }
+}
+
+void updateSequenceTimeouts(unsigned long now) {
+  for (uint8_t i = 0; i < SIDE_COUNT; i++) {
+    if (sequenceProgress[i] > 0 && sequenceLastInput[i] != 0 &&
+        now - sequenceLastInput[i] > SEQUENCE_TIMEOUT_MS) {
+      sequenceProgress[i] = 0;
+    }
+  }
+}
+
+void handleMenuActivationHold(unsigned long now) {
+  if (currentMode != MODE_IDLE) {
+    panel1MenuHoldActive = false;
+    menuHoldStart = 0;
+    return;
+  }
+
+  if (allPanel1Pressed()) {
+    if (!panel1MenuHoldActive) {
+      panel1MenuHoldActive = true;
+      menuHoldStart = now;
+      sequenceProgress[0] = 0;
+      sequenceLastInput[0] = 0;
+    } else if (now - menuHoldStart >= MENU_HOLD_MS) {
+      enterMenu();
+    }
+  } else {
+    panel1MenuHoldActive = false;
+    menuHoldStart = 0;
+  }
+}
+
+void handleButtonPress(uint8_t index, unsigned long now) {
+  uint8_t panel = buttonPanels[index];
+  if (panel == PANEL_UNKNOWN) return;
+  uint8_t number = buttonNumbers[index];
+
+  if (currentMode == MODE_IDLE) {
+    if (panel == 1 && panel1MenuHoldActive) return;
+    processSequenceInput(panel, number, now);
+    return;
+  }
+
+  if (panel != 1) return;
+  if (menuAwaitingRelease) return;
+
+  switch (currentMode) {
+    case MODE_MENU_SELECT_SIDE:
+      if (number >= 1 && number <= SIDE_COUNT) {
+        menuSelectedSide = number;
+        resetMenuSequenceBuffer();
+        currentMode = MODE_MENU_ENTER_SEQUENCE;
+        showMenuEnterSequence();
+      }
+      break;
+    case MODE_MENU_ENTER_SEQUENCE:
+      if (menuSequenceLength < DEFAULT_SEQUENCE_LENGTH) {
+        menuSequenceBuffer[menuSequenceLength++] = number;
+        showMenuEnterSequence();
+        if (menuSequenceLength >= DEFAULT_SEQUENCE_LENGTH) {
+          currentMode = MODE_MENU_CONFIRM;
+          showMenuConfirm();
+        }
+      }
+      break;
+    case MODE_MENU_CONFIRM:
+      if (number == 1) {
+        saveMenuSequence();
+      } else if (number == 2) {
+        resetMenuSequenceBuffer();
+        currentMode = MODE_MENU_ENTER_SEQUENCE;
+        showMenuEnterSequence();
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+
 void readAndSend() {
   // Keep RTC time updated even if not displayed
   RTC_SELECT();
@@ -345,6 +631,10 @@ void readAndSend() {
   }
 
   sendDistancesFramed(distances);
+
+  if (currentMode != MODE_IDLE) {
+    return;
+  }
 
   OLED_SELECT();
   display.clearDisplay();
@@ -461,8 +751,19 @@ void setup() {
     pinMode(buttonPins[i], INPUT_PULLUP);
   }
 
+  for (uint8_t side = 0; side < SIDE_COUNT; side++) {
+    storedSequenceLengths[side] = DEFAULT_SEQUENCE_LENGTH;
+    for (uint8_t i = 0; i < DEFAULT_SEQUENCE_LENGTH; i++) {
+      storedSequences[side][i] = i + 1;
+    }
+    sequenceProgress[side] = 0;
+    sequenceLastInput[side] = 0;
+  }
+  currentTunnelSide = 1;
+  resetMenuSequenceBuffer();
+
   // Now init OLED on its TCA channel
-  
+
   tcaSelect(SCREEN_CHANNEL);
   delay(50);  // let the mux settle
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
@@ -541,12 +842,19 @@ void loop() {
   unsigned long now = millis();
 
   updateButtons();
-  if (prevButtonState[0] == HIGH && buttonState[0] == LOW && (now - lastMoveMs > moveCooldownMs)) {
-    motorStep(STEPS_90, true);
-    motorStepFood(STEPS_90_FOOD, true);
-    lastMoveMs = now;
+  handleMenuActivationHold(now);
+
+  if (currentMode != MODE_IDLE && menuAwaitingRelease && allPanel1Released()) {
+    menuAwaitingRelease = false;
+    showMenuSelectSide();
   }
+
+  updateSequenceTimeouts(now);
+
   for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+    if (prevButtonState[i] == HIGH && buttonState[i] == LOW) {
+      handleButtonPress(i, now);
+    }
     prevButtonState[i] = buttonState[i];
   }
 
