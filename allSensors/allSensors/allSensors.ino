@@ -598,7 +598,7 @@ void showMenuConfirm() {
   }
 
   display.setTextSize(1);
-  display.setCursor(0, 52);
+  display.setCursor(0, 44);
   display.println(F("1=Save 2=Again"));
   display.setCursor(0, 56);
   display.println(F("3=Menu 4=Opt"));
@@ -793,16 +793,11 @@ void handleButtonPress(uint8_t index, unsigned long now) {
 
   switch (currentMode) {
     case MODE_MENU_SELECT_SIDE:
-      if (number >= 1 && number <= 3) {
+      if (number >= 1 && number <= SIDE_COUNT) {
         menuSelectedSide = number;
         resetMenuSequenceBuffer();
         currentMode = MODE_MENU_ENTER_SEQUENCE;
         showMenuEnterSequence();
-      } else if (number == 4) {
-        menuSelectedSide = 0;
-        resetMenuSequenceBuffer();
-        currentMode = MODE_MENU_MORE_OPTIONS;
-        showMenuMoreOptions();
       }
       break;
     case MODE_MENU_ENTER_SEQUENCE:
