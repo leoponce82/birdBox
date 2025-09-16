@@ -59,7 +59,7 @@ VL53L1X sensors[SENSOR_COUNT];
 volatile bool updateFlag = false;
 
 // --- power switch debounce state ---
-const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 200;
+const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 50;
 const unsigned long SWITCH_STARTUP_GRACE_MS = 1000;
 unsigned long switchHighStart = 0;
 unsigned long startupMillis = 0;
