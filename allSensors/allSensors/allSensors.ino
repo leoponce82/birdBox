@@ -98,7 +98,7 @@ const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter tur
 const int STEPS_90_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 4;  // quarter turn food motor
 
 // pulse timing (adjust for your driver/motor)
-const unsigned int STEP_PULSE_US = 600;   // high/low pulse width
+const unsigned int STEP_PULSE_US = 1000;   // high/low pulse width
 const unsigned int STEP_PULSE_FOOD_US = 1800; // high/low pulse width for food motor
 
 // --- state for motor trigger & switch edge ---
