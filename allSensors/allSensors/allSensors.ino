@@ -45,7 +45,7 @@ static inline void tcaSelect(uint8_t ch) {
 #define HANDSHAKE_SIZE 1
 
 // Flag to control whether the Uno R4 connection is expected/required
-const bool UNO_R4_EXPECTED = true;
+const bool UNO_R4_EXPECTED = false;
 
 // -------------------- OLED instance --------------------
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -114,7 +114,7 @@ const unsigned long moveCooldownMs = 1500;
 const uint16_t LOG_TRIGGER_DISTANCE_MM = 200;
 const unsigned long LOG_INTERVAL_MS = 1000;    // log every second
 const unsigned long LOG_DURATION_MS = 60000;   // log for 1 minute
-const uint8_t SD_CHIP_SELECT_PIN = 53;
+// const uint8_t SD_CHIP_SELECT_PIN = 53;
 
 bool sdAvailable = false;
 bool loggingActive = false;
