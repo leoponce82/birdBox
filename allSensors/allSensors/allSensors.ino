@@ -1215,8 +1215,6 @@ void setup() {
   Wire.begin();
   Wire.setClock(100000); // keep it conservative and rock solid
 
-  startupMillis = millis();
-
   // Power/Control pins
   pinMode(POWER_HOLD_PIN, OUTPUT);
   pinMode(GATE_5V_PIN,   OUTPUT);
@@ -1354,6 +1352,10 @@ void setup() {
   display.println(F("birdBox GO"));
   display.display();
   delay(1000);
+
+  // Record the completion of the boot sequence so the shutdown debounce
+  // ignores any start-up noise on the switch sense line.
+  startupMillis = millis();
 }
 
 
