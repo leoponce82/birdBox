@@ -5,6 +5,8 @@
 #include <RTClib.h>
 #include <TimerOne.h>
 #include <EEPROM.h>
+#include <SPI.h>
+#include <SD.h>
 
 const unsigned long BUTTON_SCAN_INTERVAL_US = 50; // 10 ms between button scans
 const uint8_t SENSOR_UPDATE_TICKS = 20;              // 20 * 10 ms = 200 ms sensor updates = 5Hz
@@ -41,6 +43,9 @@ static inline void tcaSelect(uint8_t ch) {
 #define UNO_R4_ADDR    0x08   // I2C address of the Uno R4
 #define UNO_R4_SELECT() tcaSelect(UNO_R4_CHANNEL)
 #define HANDSHAKE_SIZE 1
+
+// Flag to control whether the Uno R4 connection is expected/required
+const bool UNO_R4_EXPECTED = true;
 
 // -------------------- OLED instance --------------------
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -104,6 +109,22 @@ const unsigned int STEP_PULSE_FOOD_US = 1800; // high/low pulse width for food m
 // --- state for motor trigger & switch edge ---
 unsigned long lastMoveMs = 0;
 const unsigned long moveCooldownMs = 1500;
+
+// -------------------- SD logging --------------------
+const uint16_t LOG_TRIGGER_DISTANCE_MM = 200;
+const unsigned long LOG_INTERVAL_MS = 1000;    // log every second
+const unsigned long LOG_DURATION_MS = 60000;   // log for 1 minute
+const uint8_t SD_CHIP_SELECT_PIN = 53;
+
+bool sdAvailable = false;
+bool loggingActive = false;
+unsigned long loggingStartMillis = 0;
+unsigned long lastLogWriteMillis = 0;
+bool requireClearBeforeNextLog = false;
+int currentLogYear = -1;
+int currentLogMonth = -1;
+int currentLogDay = -1;
+char currentLogFilename[16] = "";
 
 // Hall effect alignment sensors by tunnel side (1..4)
 const uint8_t sideHallPins[4] = {
@@ -521,6 +542,9 @@ void resetChannelGroup(uint8_t ch) {
 }
 
 bool connectUnoR4() {
+  if (!UNO_R4_EXPECTED) {
+    return true;
+  }
   UNO_R4_SELECT();
   delay(3);
 
@@ -543,6 +567,9 @@ bool connectUnoR4() {
 
 // Sends header + 12 uint16_t as little-endian (lo,hi)
 bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
+  if (!UNO_R4_EXPECTED) {
+    return true;
+  }
   UNO_R4_SELECT();
   delay(3); // TCA settle
 
@@ -553,7 +580,7 @@ bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
     Wire.write((uint8_t)((v >> 8) & 0xFF)); // high byte
   }
   uint8_t err = Wire.endTransmission();
-  if (err != 0) {
+  if (err != 0 && UNO_R4_EXPECTED) {
     OLED_SELECT();
     display.clearDisplay();
     display.setTextSize(2);
@@ -567,6 +594,9 @@ bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
   return (err == 0);
 }
 bool sendDistancesToR4_chunked(const uint16_t* vals) {
+  if (!UNO_R4_EXPECTED) {
+    return true;
+  }
   for (uint8_t off = 0; off < SENSOR_COUNT; off += 6) { // 6 values = 12 bytes
     UNO_R4_SELECT();
     delay(3);
@@ -578,7 +608,7 @@ bool sendDistancesToR4_chunked(const uint16_t* vals) {
       Wire.write((uint8_t)(v >> 8));
     }
     uint8_t err = Wire.endTransmission();
-    if (err) {
+    if (err && UNO_R4_EXPECTED) {
       // show err on OLED if you want
       return false;
     }
@@ -589,6 +619,9 @@ bool sendDistancesToR4_chunked(const uint16_t* vals) {
 
 // Send distances in framed chunks (4 values per frame)
 bool sendDistancesFramed(const uint16_t *vals) {
+  if (!UNO_R4_EXPECTED) {
+    return true;
+  }
   const uint8_t CHUNK = 4;  // 4 values = 8 data bytes + 3 header = 11 total
   for (uint8_t off = 0; off < SENSOR_COUNT; off += CHUNK) {
     uint8_t cnt = (off + CHUNK <= SENSOR_COUNT) ? CHUNK : (SENSOR_COUNT - off);
@@ -608,7 +641,7 @@ bool sendDistancesFramed(const uint16_t *vals) {
     }
 
     uint8_t err = Wire.endTransmission();    // 0 = OK
-    if (err != 0) {
+    if (err != 0 && UNO_R4_EXPECTED) {
       // Show exact error code to help if this ever trips again
       tcaSelect(SCREEN_CHANNEL);
       display.clearDisplay();
@@ -621,6 +654,87 @@ bool sendDistancesFramed(const uint16_t *vals) {
     delayMicroseconds(200); // small gap between frames
   }
   return true;
+}
+
+bool ensureLogFile(DateTime now) {
+  if (!sdAvailable) {
+    return false;
+  }
+
+  if (currentLogYear == now.year() &&
+      currentLogMonth == now.month() &&
+      currentLogDay == now.day() &&
+      currentLogFilename[0] != '\0') {
+    return true;
+  }
+
+  currentLogYear = now.year();
+  currentLogMonth = now.month();
+  currentLogDay = now.day();
+  snprintf(currentLogFilename, sizeof(currentLogFilename), "%04d%02d%02d.txt", currentLogYear, currentLogMonth, currentLogDay);
+
+  bool fileExists = SD.exists(currentLogFilename);
+  File file = SD.open(currentLogFilename, FILE_WRITE);
+  if (!file) {
+    return false;
+  }
+
+  if (!fileExists) {
+    file.print(F("Date, Time"));
+    for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+      file.print(F(", Sensor"));
+      file.print(i + 1);
+      file.print(F(" (mm)"));
+    }
+    file.println();
+  }
+
+  file.close();
+  return true;
+}
+
+void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses) {
+  if (!sdAvailable) {
+    return;
+  }
+
+  if (!ensureLogFile(timestamp)) {
+    return;
+  }
+
+  File file = SD.open(currentLogFilename, FILE_WRITE);
+  if (!file) {
+    return;
+  }
+
+  file.print(timestamp.year());
+  file.print('-');
+  if (timestamp.month() < 10) file.print('0');
+  file.print(timestamp.month());
+  file.print('-');
+  if (timestamp.day() < 10) file.print('0');
+  file.print(timestamp.day());
+  file.print(F(", "));
+  if (timestamp.hour() < 10) file.print('0');
+  file.print(timestamp.hour());
+  file.print(':');
+  if (timestamp.minute() < 10) file.print('0');
+  file.print(timestamp.minute());
+  file.print(':');
+  if (timestamp.second() < 10) file.print('0');
+  file.print(timestamp.second());
+
+  for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+    file.print(F(", "));
+    if (statuses[i] == 0) {
+      file.print(distances[i]);
+    } else {
+      file.print(F("timeout"));
+    }
+  }
+
+  file.println();
+  file.close();
 }
 
 void scanButtons() {
@@ -976,10 +1090,11 @@ void handleButtonPress(uint8_t index, unsigned long now) {
 void readAndSend() {
   // Keep RTC time updated even if not displayed
   RTC_SELECT();
-  rtc.now();
+  DateTime nowTs = rtc.now();
 
   uint16_t distances[SENSOR_COUNT];
   uint8_t statuses[SENSOR_COUNT];
+  bool objectDetected = false;
   for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
     tcaSelect(ch);
     for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
@@ -987,10 +1102,34 @@ void readAndSend() {
       sensors[idx].read();
       distances[idx] = sensors[idx].ranging_data.range_mm;
       statuses[idx]  = sensors[idx].ranging_data.range_status;
+      if (!objectDetected && statuses[idx] == 0 && distances[idx] < LOG_TRIGGER_DISTANCE_MM) {
+        objectDetected = true;
+      }
     }
   }
 
   sendDistancesFramed(distances);
+
+  unsigned long nowMs = millis();
+  if (loggingActive) {
+    if (nowMs - loggingStartMillis >= LOG_DURATION_MS) {
+      loggingActive = false;
+      requireClearBeforeNextLog = true;
+    } else if (nowMs - lastLogWriteMillis >= LOG_INTERVAL_MS) {
+      appendLogEntry(nowTs, distances, statuses);
+      lastLogWriteMillis = nowMs;
+    }
+  } else if (objectDetected && sdAvailable && !requireClearBeforeNextLog) {
+    loggingActive = true;
+    loggingStartMillis = nowMs;
+    appendLogEntry(nowTs, distances, statuses);
+    lastLogWriteMillis = nowMs;
+    requireClearBeforeNextLog = true;
+  }
+
+  if (!objectDetected && !loggingActive) {
+    requireClearBeforeNextLog = false;
+  }
 
   if (currentMode != MODE_IDLE) {
     return;
@@ -1144,6 +1283,26 @@ void setup() {
   RTC_SELECT();
   rtc.begin(); // assume time is already set
 
+  // SD card (SPI)
+  pinMode(SD_CHIP_SELECT_PIN, OUTPUT);
+  if (SD.begin(SD_CHIP_SELECT_PIN)) {
+    sdAvailable = true;
+    tcaSelect(SCREEN_CHANNEL);
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println(F("SD card OK"));
+    display.display();
+    delay(400);
+  } else {
+    sdAvailable = false;
+    tcaSelect(SCREEN_CHANNEL);
+    display.clearDisplay();
+    display.setCursor(0,0);
+    display.println(F("SD init FAIL"));
+    display.display();
+    delay(800);
+  }
+
   // Put all sensors on all channels into reset first
   for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
     resetChannelGroup(ch);
@@ -1169,16 +1328,22 @@ void setup() {
 
   // Uno R4 on channel 4 with 10s timeout
   bool unoR4Ok = false;
-  unsigned long startAttempt = millis();
-  while (millis() - startAttempt < 10000 && !unoR4Ok) {
-    unoR4Ok = connectUnoR4();
-    if (!unoR4Ok) delay(500);
+  if (UNO_R4_EXPECTED) {
+    unsigned long startAttempt = millis();
+    while (millis() - startAttempt < 10000 && !unoR4Ok) {
+      unoR4Ok = connectUnoR4();
+      if (!unoR4Ok) delay(500);
+    }
   }
   tcaSelect(SCREEN_CHANNEL);
   display.clearDisplay();
   display.setCursor(0,0);
   display.print(F("UNO R4: "));
-  display.println(unoR4Ok ? F("OK") : F("FAIL"));
+  if (UNO_R4_EXPECTED) {
+    display.println(unoR4Ok ? F("OK") : F("FAIL"));
+  } else {
+    display.println(F("SKIP"));
+  }
   display.display();
   delay(1000);
   
