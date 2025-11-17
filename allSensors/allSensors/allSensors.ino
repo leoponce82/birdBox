@@ -1222,7 +1222,9 @@ void readAndSend() {
       display.print(buttonPanels[pressedIndex]);
     }
   } else {
-    display.print(F("Buttons idle"));
+    int batteryRaw = analogRead(BATTERY_PIN);
+    display.print(F("Bat ADC: "));
+    display.print(batteryRaw);
   }
   display.display();
 }
