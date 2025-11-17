@@ -29,7 +29,8 @@ const float BATTERY_R1_OHMS   = 100000.0f;
 const float BATTERY_R2_OHMS   =  47000.0f;
 const float BATTERY_MIN_V     =      9.6f;
 const float BATTERY_MAX_V     =     12.6f;
-const float ADC_REF_V         =      5.0f;
+// ADC reference calibrated to the measured 4.028V seen at 12.6V battery
+const float ADC_REF_V         =      4.028f;
 const uint8_t ADC_RESOLUTION  =       10;   // enforce 10-bit reads for predictable scaling
 const float ADC_MAX_READING   = (1 << ADC_RESOLUTION) - 1;
 
@@ -1223,8 +1224,18 @@ void readAndSend() {
     }
   } else {
     int batteryRaw = analogRead(BATTERY_PIN);
-    display.print(F("Bat ADC: "));
+    float sensedVoltage = (batteryRaw / ADC_MAX_READING) * ADC_REF_V;
+    float dividerScale = (BATTERY_R1_OHMS + BATTERY_R2_OHMS) / BATTERY_R2_OHMS;
+    float batteryVoltage = sensedVoltage * dividerScale;
+    int batteryPercent = batteryPercentFromVoltage(batteryVoltage);
+
+    display.print(F("Bat raw "));
     display.print(batteryRaw);
+    display.print(F(" "));
+    display.print(batteryVoltage, 1);
+    display.print(F("V "));
+    display.print(batteryPercent);
+    display.print(F("%"));
   }
   display.display();
 }
