@@ -25,11 +25,13 @@ volatile uint8_t sensorUpdateTickCounter = 0;
 #define GATE_5V_PIN        23   // output, goes HIGH after boot
 #define BATTERY_PIN        A0   // input, battery voltage via divider (R1=100k, R2=47k)
 
-const float BATTERY_R1_OHMS = 100000.0f;
-const float BATTERY_R2_OHMS =  47000.0f;
-const float BATTERY_MIN_V    =      9.6f;
-const float BATTERY_MAX_V    =     12.6f;
-const float ADC_REF_V        =      5.0f;
+const float BATTERY_R1_OHMS   = 100000.0f;
+const float BATTERY_R2_OHMS   =  47000.0f;
+const float BATTERY_MIN_V     =      9.6f;
+const float BATTERY_MAX_V     =     12.6f;
+const float ADC_REF_V         =      5.0f;
+const uint8_t ADC_RESOLUTION  =       10;   // enforce 10-bit reads for predictable scaling
+const float ADC_MAX_READING   = (1 << ADC_RESOLUTION) - 1;
 
 
 // -------------------- OLED --------------------
@@ -789,7 +791,7 @@ void resetMenuSequenceBuffer() {
 
 float readBatteryVoltage() {
   int raw = analogRead(BATTERY_PIN);
-  float sensedVoltage = (raw / 1023.0f) * ADC_REF_V;
+  float sensedVoltage = (raw / ADC_MAX_READING) * ADC_REF_V;
   float dividerScale = (BATTERY_R1_OHMS + BATTERY_R2_OHMS) / BATTERY_R2_OHMS;
   return sensedVoltage * dividerScale;
 }
@@ -1277,6 +1279,9 @@ void setup() {
   digitalWrite(GATE_5V_PIN,   HIGH);    // enable 5V rail for peripherals
 
   pinMode(BATTERY_PIN, INPUT);
+#if defined(analogReadResolution)
+  analogReadResolution(ADC_RESOLUTION);
+#endif
   analogRead(BATTERY_PIN); // prime ADC for battery readings
 
   // Bring up rails BEFORE touching OLED
