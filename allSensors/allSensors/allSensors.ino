@@ -23,6 +23,15 @@ volatile uint8_t sensorUpdateTickCounter = 0;
 #define CHARGER_DETECT_PIN 27   // input, 5V via divider when charger is present
 #define SWITCH_DETECT_PIN  25   // input, reads LOW when main switch is ON
 #define GATE_5V_PIN        23   // output, goes HIGH after boot
+#define BATTERY_PIN        A0   // input, battery voltage via divider (R1=100k, R2=47k)
+
+const float BATTERY_R1_OHMS   = 100000.0f;
+const float BATTERY_R2_OHMS   =  47000.0f;
+const float BATTERY_MIN_V     =      9.6f;
+const float BATTERY_MAX_V     =     12.6f;
+const float ADC_REF_V         =      5.0f;
+const uint8_t ADC_RESOLUTION  =       10;   // enforce 10-bit reads for predictable scaling
+const float ADC_MAX_READING   = (1 << ADC_RESOLUTION) - 1;
 
 
 // -------------------- OLED --------------------
@@ -780,14 +789,51 @@ void resetMenuSequenceBuffer() {
   }
 }
 
+float readBatteryVoltage() {
+  int raw = analogRead(BATTERY_PIN);
+  float sensedVoltage = (raw / ADC_MAX_READING) * ADC_REF_V;
+  float dividerScale = (BATTERY_R1_OHMS + BATTERY_R2_OHMS) / BATTERY_R2_OHMS;
+  return sensedVoltage * dividerScale;
+}
+
+int batteryPercentFromVoltage(float voltage) {
+  float pct = ((voltage - BATTERY_MIN_V) * 100.0f) / (BATTERY_MAX_V - BATTERY_MIN_V);
+  if (pct < 0.0f) pct = 0.0f;
+  if (pct > 100.0f) pct = 100.0f;
+  return (int)(pct + 0.5f);
+}
+
+bool shouldShowBatteryIndicator(int percent, unsigned long nowMs) {
+  if (percent > 20) return true;
+  return ((nowMs / 1000) % 2) == 0;
+}
+
+void drawBatteryStatus(unsigned long nowMs) {
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercentFromVoltage(voltage);
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.fillRect(0, 0, 64, 10, SSD1306_BLACK);
+
+  if (shouldShowBatteryIndicator(percent, nowMs)) {
+    display.setCursor(0, 0);
+    display.print(F("Bat "));
+    display.print(percent);
+    display.print(F("%"));
+  }
+}
+
 void displayMenuMessage(const __FlashStringHelper* line1,
                         const __FlashStringHelper* line2 = nullptr,
                         const __FlashStringHelper* line3 = nullptr) {
   OLED_SELECT();
   display.clearDisplay();
+  unsigned long now = millis();
+  drawBatteryStatus(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
+  display.setCursor(0, 10);
   if (line1) display.println(line1);
   if (line2) display.println(line2);
   if (line3) display.println(line3);
@@ -797,9 +843,11 @@ void displayMenuMessage(const __FlashStringHelper* line1,
 void showMenuSelectSide() {
   OLED_SELECT();
   display.clearDisplay();
+  unsigned long now = millis();
+  drawBatteryStatus(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
+  display.setCursor(0, 10);
   display.println(F("Menu: select side"));
   display.println(F("1=Side1 2=Side2"));
   display.println(F("3=Side3"));
@@ -811,16 +859,18 @@ void showMenuSelectSide() {
 void showMenuEnterSequence() {
   OLED_SELECT();
   display.clearDisplay();
+  unsigned long now = millis();
+  drawBatteryStatus(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
+  display.setCursor(0, 10);
   display.print(F("Side "));
   display.print(menuSelectedSide);
   display.println(F(" sequence"));
   display.println(F("Enter 4 buttons"));
 
   display.setTextSize(2);
-  display.setCursor(0, 24);
+  display.setCursor(0, 34);
   for (uint8_t i = 0; i < DEFAULT_SEQUENCE_LENGTH; i++) {
     if (i < menuSequenceLength) {
       display.print(menuSequenceBuffer[i]);
@@ -842,24 +892,26 @@ void showMenuEnterSequence() {
 void showMenuConfirm() {
   OLED_SELECT();
   display.clearDisplay();
+  unsigned long now = millis();
+  drawBatteryStatus(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
+  display.setCursor(0, 10);
   display.print(F("Side "));
   display.print(menuSelectedSide);
   display.println(F(" sequence"));
 
   display.setTextSize(2);
-  display.setCursor(0, 24);
+  display.setCursor(0, 34);
   for (uint8_t i = 0; i < menuSequenceLength; i++) {
     display.print(menuSequenceBuffer[i]);
     if (i < menuSequenceLength - 1) display.print(' ');
   }
 
   display.setTextSize(1);
-  display.setCursor(0, 44);
+  display.setCursor(0, 50);
   display.println(F("1=Save 2=Again"));
-  display.setCursor(0, 56);
+  display.setCursor(0, 58);
   display.println(F("3=Menu 4=Opt"));
   display.display();
 }
@@ -867,9 +919,11 @@ void showMenuConfirm() {
 void showMenuMoreOptions() {
   OLED_SELECT();
   display.clearDisplay();
+  unsigned long now = millis();
+  drawBatteryStatus(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
+  display.setCursor(0, 10);
   display.println(F("Options"));
   display.println(F("1=Factory reset"));
   display.println(F("2=Exit menu"));
@@ -1138,9 +1192,11 @@ void readAndSend() {
 
   OLED_SELECT();
   display.clearDisplay();
+  unsigned long nowDisplay = millis();
+  drawBatteryStatus(nowDisplay);
   display.setTextSize(1);
   for (uint8_t i = 0; i < SENSOR_COUNT; i += 2) {
-    uint8_t y = (i / 2) * 10;
+    uint8_t y = 8 + (i / 2) * 8;
     display.setCursor(0, y);
     display.print(F("S")); display.print(i + 1); display.print(F(":"));
     if (statuses[i] == 0) display.print(distances[i]);
@@ -1221,6 +1277,12 @@ void setup() {
   pinMode(GATE_5V_PIN,   OUTPUT);
   digitalWrite(POWER_HOLD_PIN, HIGH);   // hold power after boot
   digitalWrite(GATE_5V_PIN,   HIGH);    // enable 5V rail for peripherals
+
+  pinMode(BATTERY_PIN, INPUT);
+#if defined(analogReadResolution)
+  analogReadResolution(ADC_RESOLUTION);
+#endif
+  analogRead(BATTERY_PIN); // prime ADC for battery readings
 
   // Bring up rails BEFORE touching OLED
   pinMode(CHARGER_DETECT_PIN, INPUT);       // expects 0/5V from divider
