@@ -8,6 +8,9 @@
 #include <SPI.h>
 #include <SD.h>
 
+// Flag to control whether the Uno R4 connection is expected/required
+const bool UNO_R4_EXPECTED = false;
+
 const unsigned long BUTTON_SCAN_INTERVAL_US = 50; // 10 ms between button scans
 const uint8_t SENSOR_UPDATE_TICKS = 20;              // 20 * 10 ms = 200 ms sensor updates = 5Hz
 
@@ -44,8 +47,6 @@ static inline void tcaSelect(uint8_t ch) {
 #define UNO_R4_SELECT() tcaSelect(UNO_R4_CHANNEL)
 #define HANDSHAKE_SIZE 1
 
-// Flag to control whether the Uno R4 connection is expected/required
-const bool UNO_R4_EXPECTED = false;
 
 // -------------------- OLED instance --------------------
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
