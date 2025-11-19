@@ -77,9 +77,10 @@ const unsigned long AHT_READ_INTERVAL_MS = 2000;
 
 float accelBaselineMag = 9.81f;
 unsigned long lastPeckDetectedMs = 0;
-const float ACCEL_BASELINE_ALPHA = 0.02f;
-const float PECK_THRESHOLD_MS2 = 1.5f;
-const unsigned long PECK_HOLD_MS = 2000;
+// Faster-reacting baseline and lower threshold for light pecks/vibrations
+const float ACCEL_BASELINE_ALPHA = 0.08f;
+const float PECK_THRESHOLD_MS2 = 0.9f;
+const unsigned long PECK_HOLD_MS = 1000;
 
 // -------------------- VL53L1X --------------------
 #define SENSOR_CHANNELS     4            // channels 0..3 used for sensors
@@ -1444,7 +1445,8 @@ void setup() {
   RTC_SELECT();
   accelReady = accel.begin();
   if (accelReady) {
-    accel.setRange(LSM303_RANGE_4G);
+    // Y axis up, X axis sideways; use most sensitive ±2G range for light pecks
+    accel.setRange(LSM303_RANGE_2G);
     accel.setMode(LSM303_MODE_NORMAL);
     sensors_event_t event;
     if (accel.getEvent(&event)) {
