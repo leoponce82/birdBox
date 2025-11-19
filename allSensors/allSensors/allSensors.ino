@@ -3,6 +3,10 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <RTClib.h>
+#include <Adafruit_AHTX0.h>
+#include <Adafruit_LSM303_Accel.h>
+#include <Adafruit_Sensor.h>
+#include <math.h>
 #include <TimerOne.h>
 #include <EEPROM.h>
 #include <SPI.h>
@@ -61,6 +65,21 @@ static inline void tcaSelect(uint8_t ch) {
 // -------------------- OLED instance --------------------
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 RTC_DS3231 rtc;
+Adafruit_AHTX0 aht20;
+Adafruit_LSM303_Accel_Unified accel = Adafruit_LSM303_Accel_Unified(54321);
+
+bool ahtReady = false;
+bool accelReady = false;
+float lastTempC = NAN;
+float lastHumidity = NAN;
+unsigned long lastAhtReadMs = 0;
+const unsigned long AHT_READ_INTERVAL_MS = 2000;
+
+float accelBaselineMag = 9.81f;
+unsigned long lastPeckDetectedMs = 0;
+const float ACCEL_BASELINE_ALPHA = 0.02f;
+const float PECK_THRESHOLD_MS2 = 1.5f;
+const unsigned long PECK_HOLD_MS = 2000;
 
 // -------------------- VL53L1X --------------------
 #define SENSOR_CHANNELS     4            // channels 0..3 used for sensors
@@ -825,13 +844,71 @@ void drawBatteryStatus(unsigned long nowMs) {
   }
 }
 
+void updateEnvironmentReadings(unsigned long nowMs) {
+  if (!ahtReady) return;
+  if (nowMs - lastAhtReadMs < AHT_READ_INTERVAL_MS) return;
+  lastAhtReadMs = nowMs;
+
+  RTC_SELECT();
+  sensors_event_t humidityEvent, tempEvent;
+  aht20.getEvent(&humidityEvent, &tempEvent);
+
+  if (!isnan(tempEvent.temperature)) {
+    lastTempC = tempEvent.temperature;
+  }
+  if (!isnan(humidityEvent.relative_humidity)) {
+    lastHumidity = humidityEvent.relative_humidity;
+  }
+}
+
+void updatePeckDetection(unsigned long nowMs) {
+  if (!accelReady) return;
+
+  RTC_SELECT();
+  sensors_event_t event;
+  if (!accel.getEvent(&event)) return;
+
+  float mag = sqrtf(event.acceleration.x * event.acceleration.x +
+                    event.acceleration.y * event.acceleration.y +
+                    event.acceleration.z * event.acceleration.z);
+
+  accelBaselineMag = (1.0f - ACCEL_BASELINE_ALPHA) * accelBaselineMag + ACCEL_BASELINE_ALPHA * mag;
+  if (fabsf(mag - accelBaselineMag) > PECK_THRESHOLD_MS2) {
+    lastPeckDetectedMs = nowMs;
+  }
+}
+
+bool peckDetectedRecently(unsigned long nowMs) {
+  return accelReady && (nowMs - lastPeckDetectedMs) < PECK_HOLD_MS;
+}
+
+void drawPeckIndicator(unsigned long nowMs) {
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.fillRect(64, 0, 64, 10, SSD1306_BLACK);
+  display.setCursor(70, 0);
+
+  if (!accelReady) {
+    display.print(F("PECK --"));
+  } else if (peckDetectedRecently(nowMs)) {
+    display.print(F("PECK!"));
+  } else {
+    display.print(F("Calm"));
+  }
+}
+
+void drawStatusHeader(unsigned long nowMs) {
+  drawBatteryStatus(nowMs);
+  drawPeckIndicator(nowMs);
+}
+
 void displayMenuMessage(const __FlashStringHelper* line1,
                         const __FlashStringHelper* line2 = nullptr,
                         const __FlashStringHelper* line3 = nullptr) {
   OLED_SELECT();
   display.clearDisplay();
   unsigned long now = millis();
-  drawBatteryStatus(now);
+  drawStatusHeader(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 10);
@@ -845,7 +922,7 @@ void showMenuSelectSide() {
   OLED_SELECT();
   display.clearDisplay();
   unsigned long now = millis();
-  drawBatteryStatus(now);
+  drawStatusHeader(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 10);
@@ -861,7 +938,7 @@ void showMenuEnterSequence() {
   OLED_SELECT();
   display.clearDisplay();
   unsigned long now = millis();
-  drawBatteryStatus(now);
+  drawStatusHeader(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 10);
@@ -894,7 +971,7 @@ void showMenuConfirm() {
   OLED_SELECT();
   display.clearDisplay();
   unsigned long now = millis();
-  drawBatteryStatus(now);
+  drawStatusHeader(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 10);
@@ -921,7 +998,7 @@ void showMenuMoreOptions() {
   OLED_SELECT();
   display.clearDisplay();
   unsigned long now = millis();
-  drawBatteryStatus(now);
+  drawStatusHeader(now);
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 10);
@@ -1194,7 +1271,7 @@ void readAndSend() {
   OLED_SELECT();
   display.clearDisplay();
   unsigned long nowDisplay = millis();
-  drawBatteryStatus(nowDisplay);
+  drawStatusHeader(nowDisplay);
   display.setTextSize(1);
   for (uint8_t i = 0; i < SENSOR_COUNT; i += 2) {
     uint8_t y = 8 + (i / 2) * 8;
@@ -1223,19 +1300,15 @@ void readAndSend() {
       display.print(buttonPanels[pressedIndex]);
     }
   } else {
-    int batteryRaw = analogRead(BATTERY_PIN);
-    float sensedVoltage = (batteryRaw / ADC_MAX_READING) * ADC_REF_V;
-    float dividerScale = (BATTERY_R1_OHMS + BATTERY_R2_OHMS) / BATTERY_R2_OHMS;
-    float batteryVoltage = sensedVoltage * dividerScale;
-    int batteryPercent = batteryPercentFromVoltage(batteryVoltage);
-
-    display.print(F("Bat raw "));
-    display.print(batteryRaw);
-    display.print(F(" "));
-    display.print(batteryVoltage, 1);
-    display.print(F("V "));
-    display.print(batteryPercent);
-    display.print(F("%"));
+    if (ahtReady && !isnan(lastTempC) && !isnan(lastHumidity)) {
+      display.print(F("Temp "));
+      display.print(lastTempC, 1);
+      display.print(F("C  "));
+      display.print(lastHumidity, 0);
+      display.print(F("% RH"));
+    } else {
+      display.print(F("Env sensor N/A"));
+    }
   }
   display.display();
 }
@@ -1357,6 +1430,37 @@ void setup() {
   RTC_SELECT();
   rtc.begin(); // assume time is already set
 
+  // Temperature/humidity and peck detection sensors share the RTC/OLED channel
+  RTC_SELECT();
+  ahtReady = aht20.begin();
+  tcaSelect(SCREEN_CHANNEL);
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.print(F("AHT20: "));
+  display.println(ahtReady ? F("OK") : F("FAIL"));
+  display.display();
+  delay(400);
+
+  RTC_SELECT();
+  accelReady = accel.begin();
+  if (accelReady) {
+    accel.setRange(LSM303_RANGE_4G);
+    accel.setMode(LSM303_MODE_NORMAL);
+    sensors_event_t event;
+    if (accel.getEvent(&event)) {
+      accelBaselineMag = sqrtf(event.acceleration.x * event.acceleration.x +
+                               event.acceleration.y * event.acceleration.y +
+                               event.acceleration.z * event.acceleration.z);
+    }
+  }
+  tcaSelect(SCREEN_CHANNEL);
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.print(F("LSM303: "));
+  display.println(accelReady ? F("OK") : F("FAIL"));
+  display.display();
+  delay(400);
+
   // SD card (SPI)
   pinMode(SD_CHIP_SELECT_PIN, OUTPUT);
   if (SD.begin(SD_CHIP_SELECT_PIN)) {
@@ -1455,6 +1559,9 @@ void loop() {
   }
 
   unsigned long now = millis();
+
+  updateEnvironmentReadings(now);
+  updatePeckDetection(now);
 
   bool hasPending = false;
 
