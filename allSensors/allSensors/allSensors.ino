@@ -85,6 +85,7 @@ const float PECK_THRESHOLD_MS2 = 0.18f;        // ~0.02g delta catches very ligh
 const unsigned long PECK_HOLD_MS = 700;        // quick visual reset for rapid tuning
 const bool SERIAL_ACCEL_DEBUG = true;          // emit raw + filtered accel readings over Serial
 const unsigned long ACCEL_DEBUG_INTERVAL_MS = 100;
+const unsigned long SERIAL_BAUD = 115200;
 
 // -------------------- VL53L1X --------------------
 #define SENSOR_CHANNELS     4            // channels 0..3 used for sensors
@@ -887,13 +888,13 @@ void updatePeckDetection(unsigned long nowMs) {
   static unsigned long lastAccelDebugMs = 0;
   if (SERIAL_ACCEL_DEBUG && (nowMs - lastAccelDebugMs) >= ACCEL_DEBUG_INTERVAL_MS) {
     lastAccelDebugMs = nowMs;
-    Serial.print(F("ACCEL raw x=")); Serial.print(event.acceleration.x, 3);
-    Serial.print(F(" y=")); Serial.print(event.acceleration.y, 3);
-    Serial.print(F(" z=")); Serial.print(event.acceleration.z, 3);
-    Serial.print(F(" | highpass dx=")); Serial.print(dx, 4);
-    Serial.print(F(" dy=")); Serial.print(dy, 4);
-    Serial.print(F(" dz=")); Serial.print(dz, 4);
-    Serial.print(F(" mag=")); Serial.println(highpassMag, 4);
+    Serial.print(F("raw_x:")); Serial.print(event.acceleration.x, 3);
+    Serial.print(F("\traw_y:")); Serial.print(event.acceleration.y, 3);
+    Serial.print(F("\traw_z:")); Serial.print(event.acceleration.z, 3);
+    Serial.print(F("\thp_x:")); Serial.print(dx, 4);
+    Serial.print(F("\thp_y:")); Serial.print(dy, 4);
+    Serial.print(F("\thp_z:")); Serial.print(dz, 4);
+    Serial.print(F("\thp_mag:")); Serial.println(highpassMag, 4);
   }
 
   if (highpassMag > PECK_THRESHOLD_MS2) {
@@ -1378,6 +1379,8 @@ void shutdownSequence(){
 
 // -------------------- SETUP/LOOP --------------------
 void setup() {
+  Serial.begin(SERIAL_BAUD);
+
   Wire.begin();
   Wire.setClock(100000); // keep it conservative and rock solid
 
