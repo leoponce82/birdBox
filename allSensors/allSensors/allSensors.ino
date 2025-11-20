@@ -134,13 +134,13 @@ void timerISR() {
 #define EN_PIN2        30
 #define MICROSTEPS      8     // set to the hardware microstep setting (1,2,4,8,16, ...)
 #define STEPS_PER_REV      200     // 1.8° motor
-#define STEPS_PER_REV_FOOD  516     // gear motor for food dispenser
+#define STEPS_PER_REV_FOOD  200     // gear motor for food dispenser
 const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter turn main motor
 const int STEPS_90_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 4;  // quarter turn food motor
 
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 1000;   // high/low pulse width
-const unsigned int STEP_PULSE_FOOD_US = 1800; // high/low pulse width for food motor
+const unsigned int STEP_PULSE_FOOD_US = 1000; // high/low pulse width for food motor
 
 // --- state for motor trigger & switch edge ---
 unsigned long lastMoveMs = 0;
