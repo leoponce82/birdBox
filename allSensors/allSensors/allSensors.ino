@@ -83,6 +83,8 @@ unsigned long lastPeckDetectedMs = 0;
 const float ACCEL_BASELINE_ALPHA = 0.02f;      // slow baseline keeps small shocks visible
 const float PECK_THRESHOLD_MS2 = 0.18f;        // ~0.02g delta catches very light taps
 const unsigned long PECK_HOLD_MS = 700;        // quick visual reset for rapid tuning
+const bool SERIAL_ACCEL_DEBUG = true;          // emit raw + filtered accel readings over Serial
+const unsigned long ACCEL_DEBUG_INTERVAL_MS = 100;
 
 // -------------------- VL53L1X --------------------
 #define SENSOR_CHANNELS     4            // channels 0..3 used for sensors
@@ -881,6 +883,19 @@ void updatePeckDetection(unsigned long nowMs) {
   accelBaselineZ += ACCEL_BASELINE_ALPHA * dz;
 
   float highpassMag = sqrtf(dx * dx + dy * dy + dz * dz);
+
+  static unsigned long lastAccelDebugMs = 0;
+  if (SERIAL_ACCEL_DEBUG && (nowMs - lastAccelDebugMs) >= ACCEL_DEBUG_INTERVAL_MS) {
+    lastAccelDebugMs = nowMs;
+    Serial.print(F("ACCEL raw x=")); Serial.print(event.acceleration.x, 3);
+    Serial.print(F(" y=")); Serial.print(event.acceleration.y, 3);
+    Serial.print(F(" z=")); Serial.print(event.acceleration.z, 3);
+    Serial.print(F(" | highpass dx=")); Serial.print(dx, 4);
+    Serial.print(F(" dy=")); Serial.print(dy, 4);
+    Serial.print(F(" dz=")); Serial.print(dz, 4);
+    Serial.print(F(" mag=")); Serial.println(highpassMag, 4);
+  }
+
   if (highpassMag > PECK_THRESHOLD_MS2) {
     lastPeckDetectedMs = nowMs;
   }
