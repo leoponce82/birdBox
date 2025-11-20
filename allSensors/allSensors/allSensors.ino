@@ -84,7 +84,7 @@ const float ACCEL_BASELINE_ALPHA = 0.02f;      // slow baseline keeps small shoc
 const float PECK_THRESHOLD_MS2 = 0.18f;        // ~0.02g delta catches very light taps
 const unsigned long PECK_HOLD_MS = 700;        // quick visual reset for rapid tuning
 const bool SERIAL_ACCEL_DEBUG = true;          // emit raw + filtered accel readings over Serial
-const unsigned long ACCEL_DEBUG_INTERVAL_MS = 100;
+const unsigned long ACCEL_DEBUG_INTERVAL_MS = 10;
 const unsigned long SERIAL_BAUD = 115200;
 
 // -------------------- VL53L1X --------------------
@@ -1379,7 +1379,7 @@ void shutdownSequence(){
 
 // -------------------- SETUP/LOOP --------------------
 void setup() {
-  Serial.begin(SERIAL_BAUD);
+  // Serial.begin(SERIAL_BAUD);
 
   Wire.begin();
   Wire.setClock(100000); // keep it conservative and rock solid
@@ -1434,7 +1434,7 @@ void setup() {
   tcaSelect(SCREEN_CHANNEL);
   delay(50);  // let the mux settle
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
-    Serial.println(F("SSD1306 allocation failed"));
+    // Serial.println(F("SSD1306 allocation failed"));
     for(;;); // Don't proceed, loop forever
   }
   display.display();
