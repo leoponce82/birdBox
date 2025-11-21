@@ -144,6 +144,8 @@ const unsigned int STEP_PULSE_FOOD_US = 1000; // high/low pulse width for food m
 
 // Fine-tune how far past the hall sensor the tunnel should travel to align with the opening
 const uint8_t ALIGNMENT_OVERSHOOT_STEPS = 10;
+// Additional steps to park the tunnel halfway between two sides (~23 degrees)
+const uint16_t TUNNEL_PARK_STEPS = (uint16_t)((STEPS_PER_REV * (long)MICROSTEPS * 23L) / 360L);
 
 // --- state for motor trigger & switch edge ---
 unsigned long lastMoveMs = 0;
@@ -567,6 +569,14 @@ bool rotateTunnelToSide(uint8_t targetSide) {
   return aligned;
 }
 
+void parkTunnelBetweenSides() {
+  if (!isSideAligned(currentTunnelSide)) {
+    rotateTunnelToSide(currentTunnelSide);
+  }
+
+  motorStep(TUNNEL_PARK_STEPS, true);
+}
+
 bool initSensorOn(uint8_t ch, uint8_t idxInCh) {
   // idxInCh: 0..2 within the channel
   const uint8_t globalIndex = ch * SENSORS_PER_CHANNEL + idxInCh;
@@ -746,6 +756,7 @@ bool ensureLogFile(DateTime now) {
     file.println();
   }
 
+  file.flush();
   file.close();
   return true;
 }
@@ -806,7 +817,20 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
 
   file.print(F(", "));
   file.println(peckActive ? F("yes") : F("no"));
+  file.flush();
   file.close();
+}
+
+void flushSdCard() {
+  if (!sdAvailable || currentLogFilename[0] == '\0') {
+    return;
+  }
+
+  File file = SD.open(currentLogFilename, FILE_WRITE);
+  if (file) {
+    file.flush();
+    file.close();
+  }
 }
 
 void scanButtons() {
@@ -1404,11 +1428,17 @@ void shutdownSequence(){
   // 2) Quiet sensors (optional)
   for (uint8_t ch=0; ch<SENSOR_CHANNELS; ch++) resetChannelGroup(ch);
 
-  // 3) Cut 5V rail to peripherals
+  // 3) Park tunnel between sides to sit midway on power-down
+  parkTunnelBetweenSides();
+
+  // 4) Flush any SD writes to avoid corruption
+  flushSdCard();
+
+  // 5) Cut 5V rail to peripherals
   digitalWrite(GATE_5V_PIN, LOW);
   delay(100);
 
-  // 4) Release power hold – system powers off
+  // 6) Release power hold – system powers off
   digitalWrite(POWER_HOLD_PIN, LOW);
 
   // If hardware doesn't cut immediately, wait here
