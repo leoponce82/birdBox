@@ -139,8 +139,11 @@ const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter tur
 const int STEPS_90_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 4;  // quarter turn food motor
 
 // pulse timing (adjust for your driver/motor)
-const unsigned int STEP_PULSE_US = 1000;   // high/low pulse width
+const unsigned int STEP_PULSE_US = 1500;   // high/low pulse width (slower for precise tunnel alignment)
 const unsigned int STEP_PULSE_FOOD_US = 1000; // high/low pulse width for food motor
+
+// Fine-tune how far past the hall sensor the tunnel should travel to align with the opening
+const uint8_t ALIGNMENT_OVERSHOOT_STEPS = 8;
 
 // --- state for motor trigger & switch edge ---
 unsigned long lastMoveMs = 0;
@@ -491,6 +494,7 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
   }
 
   bool aligned = false;
+  unsigned long stepsTaken = 0;
   digitalWrite(EN_PIN, LOW);
   digitalWrite(DIR_PIN, dirCW ? HIGH : LOW);
   delayMicroseconds(2);
@@ -499,11 +503,27 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
     delayMicroseconds(STEP_PULSE_US);
     digitalWrite(STEP_PIN, LOW);
     delayMicroseconds(STEP_PULSE_US);
+    stepsTaken++;
     if (digitalRead(hallPin) == LOW) {
       aligned = true;
       break;
     }
   }
+
+  if (aligned) {
+    unsigned long remainingBudget = (stepsTaken >= maxSteps) ? 0 : (maxSteps - stepsTaken);
+    unsigned long overshootSteps = ALIGNMENT_OVERSHOOT_STEPS;
+    if (overshootSteps > remainingBudget) {
+      overshootSteps = remainingBudget;
+    }
+    for (unsigned long i = 0; i < overshootSteps; i++) {
+      digitalWrite(STEP_PIN, HIGH);
+      delayMicroseconds(STEP_PULSE_US);
+      digitalWrite(STEP_PIN, LOW);
+      delayMicroseconds(STEP_PULSE_US);
+    }
+  }
+
   digitalWrite(EN_PIN, HIGH);
   return aligned || digitalRead(hallPin) == LOW;
 }
@@ -532,11 +552,11 @@ bool rotateTunnelToSide(uint8_t targetSide) {
     quarterTurns = SIDE_COUNT;
   }
 
-  unsigned long maxSteps = (unsigned long)quarterTurns * STEPS_90 + (STEPS_90 / 2);
+  unsigned long maxSteps = (unsigned long)quarterTurns * STEPS_90 + (STEPS_90 / 2) + ALIGNMENT_OVERSHOOT_STEPS;
   bool aligned = stepMotorUntilAligned(hallPin, dirCW, maxSteps);
 
   if (!aligned && quarterTurns != SIDE_COUNT) {
-    unsigned long fullRotationSteps = (unsigned long)SIDE_COUNT * STEPS_90 + (STEPS_90 / 2);
+    unsigned long fullRotationSteps = (unsigned long)SIDE_COUNT * STEPS_90 + (STEPS_90 / 2) + ALIGNMENT_OVERSHOOT_STEPS;
     aligned = stepMotorUntilAligned(hallPin, dirCW, fullRotationSteps);
   }
 
