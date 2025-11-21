@@ -960,8 +960,8 @@ bool peckDetectedRecently(unsigned long nowMs) {
 void drawPeckIndicator(unsigned long nowMs) {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.fillRect(64, 0, 64, 10, SSD1306_BLACK);
-  display.setCursor(70, 0);
+  display.fillRect(90, 0, 90, 10, SSD1306_BLACK);
+  display.setCursor(90, 0);
 
   if (!accelReady) {
     display.print(F("PECK --"));
