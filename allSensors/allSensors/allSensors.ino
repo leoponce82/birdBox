@@ -742,6 +742,7 @@ bool ensureLogFile(DateTime now) {
       file.print(i + 1);
       file.print(F(" (mm)"));
     }
+    file.print(F(", Temp (C), Humidity (%), Peck"));
     file.println();
   }
 
@@ -749,7 +750,7 @@ bool ensureLogFile(DateTime now) {
   return true;
 }
 
-void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses) {
+void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses, bool peckActive) {
   if (!sdAvailable) {
     return;
   }
@@ -789,7 +790,22 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
     }
   }
 
-  file.println();
+  file.print(F(", "));
+  if (isnan(lastTempC)) {
+    file.print(F("n/a"));
+  } else {
+    file.print(lastTempC, 2);
+  }
+
+  file.print(F(", "));
+  if (isnan(lastHumidity)) {
+    file.print(F("n/a"));
+  } else {
+    file.print(lastHumidity, 2);
+  }
+
+  file.print(F(", "));
+  file.println(peckActive ? F("yes") : F("no"));
   file.close();
 }
 
@@ -863,10 +879,25 @@ void drawBatteryStatus(unsigned long nowMs) {
   display.fillRect(0, 0, 64, 10, SSD1306_BLACK);
 
   if (shouldShowBatteryIndicator(percent, nowMs)) {
-    display.setCursor(0, 0);
-    display.print(F("Bat "));
+    const uint8_t iconX = 0;
+    const uint8_t iconY = 1;
+    const uint8_t iconW = 16;
+    const uint8_t iconH = 8;
+
+    display.drawRect(iconX, iconY, iconW, iconH, SSD1306_WHITE);
+    display.fillRect(iconX + iconW, iconY + 2, 2, iconH - 4, SSD1306_WHITE);
+
+    int cappedPercent = percent;
+    if (cappedPercent < 0) cappedPercent = 0;
+    if (cappedPercent > 100) cappedPercent = 100;
+    uint8_t fillW = (uint8_t)((iconW - 2) * cappedPercent / 100.0f);
+    display.fillRect(iconX + 1, iconY + 1, fillW, iconH - 2, SSD1306_WHITE);
+
+    display.setCursor(iconX + iconW + 4, 0);
     display.print(percent);
-    display.print(F("%"));
+    display.print(F("% "));
+    display.print(voltage, 1);
+    display.print(F("V"));
   }
 }
 
@@ -1288,18 +1319,19 @@ void readAndSend() {
   sendDistancesFramed(distances);
 
   unsigned long nowMs = millis();
+  bool peckActive = peckDetectedRecently(nowMs);
   if (loggingActive) {
     if (nowMs - loggingStartMillis >= LOG_DURATION_MS) {
       loggingActive = false;
       requireClearBeforeNextLog = true;
     } else if (nowMs - lastLogWriteMillis >= LOG_INTERVAL_MS) {
-      appendLogEntry(nowTs, distances, statuses);
+      appendLogEntry(nowTs, distances, statuses, peckActive);
       lastLogWriteMillis = nowMs;
     }
   } else if (objectDetected && sdAvailable && !requireClearBeforeNextLog) {
     loggingActive = true;
     loggingStartMillis = nowMs;
-    appendLogEntry(nowTs, distances, statuses);
+    appendLogEntry(nowTs, distances, statuses, peckActive);
     lastLogWriteMillis = nowMs;
     requireClearBeforeNextLog = true;
   }
@@ -1342,16 +1374,6 @@ void readAndSend() {
     if (buttonPanels[pressedIndex] != PANEL_UNKNOWN) {
       display.print(F(", panel "));
       display.print(buttonPanels[pressedIndex]);
-    }
-  } else {
-    if (ahtReady && !isnan(lastTempC) && !isnan(lastHumidity)) {
-      display.print(F("Temp "));
-      display.print(lastTempC, 1);
-      display.print(F("C  "));
-      display.print(lastHumidity, 0);
-      display.print(F("% RH"));
-    } else {
-      display.print(F("Env sensor N/A"));
     }
   }
   display.display();
