@@ -927,11 +927,17 @@ void drawBatteryStatus(unsigned long nowMs) {
       display.fillRect(iconX + 1, iconY + 1, fillW, iconH - 2, SSD1306_WHITE);
     }
 
-    display.setCursor(iconX + iconW + 4, 0);
+    display.setCursor(0, 0);
     display.print(percent);
     display.print(F("% "));
     display.print(voltage, 1);
     display.print(F("V"));
+
+    if (chargerConnected) {
+      const uint8_t boltX = display.getCursorX() + 2;
+      const uint8_t boltY = iconY;
+      drawChargingBolt(boltX, boltY);
+    }
   }
 }
 
