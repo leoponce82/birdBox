@@ -893,37 +893,6 @@ bool isChargerConnected() {
   return digitalRead(CHARGER_DETECT_PIN) == HIGH;
 }
 
-void drawChargingBolt(uint8_t x, uint8_t y) {
-  // 5x7 pixel bolt silhouette designed for a single text row (y..y+6)
-  // Pattern (1 = white pixel):
-  //  .#...
-  //  .##..
-  //  .##..
-  //  ..##.
-  //  ..##.
-  //  ...##
-  //  ...#.
-  static const uint8_t BOLT_W = 5;
-  static const uint8_t BOLT_H = 7;
-  static const bool boltMask[BOLT_H][BOLT_W] = {
-    {0, 1, 1, 0, 0},
-    {0, 1, 1, 1, 0},
-    {0, 1, 1, 1, 0},
-    {0, 0, 1, 1, 0},
-    {0, 0, 1, 1, 0},
-    {0, 0, 0, 1, 1},
-    {0, 0, 0, 1, 0}
-  };
-
-  for (uint8_t row = 0; row < BOLT_H; row++) {
-    for (uint8_t col = 0; col < BOLT_W; col++) {
-      if (boltMask[row][col]) {
-        display.drawPixel(x + col, y + row, SSD1306_WHITE);
-      }
-    }
-  }
-}
-
 bool shouldShowBatteryIndicator(int percent, unsigned long nowMs) {
   if (percent > 20) return true;
   return ((nowMs / 1000) % 2) == 0;
@@ -941,7 +910,7 @@ void drawBatteryStatus(unsigned long nowMs) {
   if (shouldShowBatteryIndicator(percent, nowMs)) {
     const uint8_t iconW = 16;
     const uint8_t iconH = 8;
-    const uint8_t iconX = SCREEN_WIDTH - iconW - 2; // tuck into the top-right corner
+    const uint8_t iconX = 0;  // anchor at the left edge
     const uint8_t iconY = 0;
 
     display.drawRect(iconX, iconY, iconW, iconH, SSD1306_WHITE);
@@ -950,8 +919,13 @@ void drawBatteryStatus(unsigned long nowMs) {
     int cappedPercent = percent;
     if (cappedPercent < 0) cappedPercent = 0;
     if (cappedPercent > 100) cappedPercent = 100;
-    uint8_t fillW = (uint8_t)((iconW - 2) * cappedPercent / 100.0f);
-    display.fillRect(iconX + 1, iconY + 1, fillW, iconH - 2, SSD1306_WHITE);
+
+    const uint8_t fillMaxW = iconW - 2;
+    uint8_t fillW = (uint8_t)(fillMaxW * cappedPercent / 100.0f);
+    bool showFill = !chargerConnected || ((nowMs / 500) % 2 == 0);
+    if (showFill && fillW > 0) {
+      display.fillRect(iconX + 1, iconY + 1, fillW, iconH - 2, SSD1306_WHITE);
+    }
 
     display.setCursor(0, 0);
     display.print(percent);
