@@ -24,7 +24,7 @@ volatile uint8_t sensorUpdateTickCounter = 0;
 
 // --- Power / control pins ---
 #define POWER_HOLD_PIN     26   // output, goes HIGH after boot
-#define CHARGER_DETECT_PIN 27   // input, 5V via divider when charger is present
+#define CHARGER_DETECT_PIN 27   // input, HIGH when charger jack is inserted (floating jack, pulled up when present)
 #define SWITCH_DETECT_PIN  25   // input, reads LOW when main switch is ON
 #define GATE_5V_PIN        23   // output, goes HIGH after boot
 #define BATTERY_PIN        A0   // input, battery voltage via divider (R1=100k, R2=47k)
@@ -889,6 +889,10 @@ int batteryPercentFromVoltage(float voltage) {
   return (int)(pct + 0.5f);
 }
 
+bool isChargerConnected() {
+  return digitalRead(CHARGER_DETECT_PIN) == HIGH;
+}
+
 bool shouldShowBatteryIndicator(int percent, unsigned long nowMs) {
   if (percent > 20) return true;
   return ((nowMs / 1000) % 2) == 0;
@@ -897,16 +901,17 @@ bool shouldShowBatteryIndicator(int percent, unsigned long nowMs) {
 void drawBatteryStatus(unsigned long nowMs) {
   float voltage = readBatteryVoltage();
   int percent = batteryPercentFromVoltage(voltage);
+  bool chargerConnected = isChargerConnected();
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.fillRect(0, 0, 64, 10, SSD1306_BLACK);
+  display.fillRect(0, 0, SCREEN_WIDTH, 10, SSD1306_BLACK);
 
   if (shouldShowBatteryIndicator(percent, nowMs)) {
-    const uint8_t iconX = 0;
-    const uint8_t iconY = 1;
     const uint8_t iconW = 16;
     const uint8_t iconH = 8;
+    const uint8_t iconX = 0;  // anchor at the left edge
+    const uint8_t iconY = 0;
 
     display.drawRect(iconX, iconY, iconW, iconH, SSD1306_WHITE);
     display.fillRect(iconX + iconW, iconY + 2, 2, iconH - 4, SSD1306_WHITE);
@@ -914,8 +919,13 @@ void drawBatteryStatus(unsigned long nowMs) {
     int cappedPercent = percent;
     if (cappedPercent < 0) cappedPercent = 0;
     if (cappedPercent > 100) cappedPercent = 100;
-    uint8_t fillW = (uint8_t)((iconW - 2) * cappedPercent / 100.0f);
-    display.fillRect(iconX + 1, iconY + 1, fillW, iconH - 2, SSD1306_WHITE);
+
+    const uint8_t fillMaxW = iconW - 2;
+    uint8_t fillW = (uint8_t)(fillMaxW * cappedPercent / 100.0f);
+    bool showFill = !chargerConnected || ((nowMs / 500) % 2 == 0);
+    if (showFill && fillW > 0) {
+      display.fillRect(iconX + 1, iconY + 1, fillW, iconH - 2, SSD1306_WHITE);
+    }
 
     display.setCursor(iconX + iconW + 4, 0);
     display.print(percent);
@@ -984,15 +994,12 @@ bool peckDetectedRecently(unsigned long nowMs) {
 void drawPeckIndicator(unsigned long nowMs) {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.fillRect(90, 0, 90, 10, SSD1306_BLACK);
-  display.setCursor(90, 0);
+  display.fillRect(118, 0, 10, 10, SSD1306_BLACK);
 
-  if (!accelReady) {
-    display.print(F("PECK --"));
-  } else if (peckDetectedRecently(nowMs)) {
-    display.print(F("PECK!"));
-  } else {
-    display.print(F("Calm"));
+  if (accelReady && peckDetectedRecently(nowMs)) {
+    const uint8_t x = 122;
+    const uint8_t y = 1;
+    display.fillTriangle(x, y + 6, x + 6, y + 6, x + 3, y, SSD1306_WHITE);
   }
 }
 
@@ -1469,7 +1476,7 @@ void setup() {
   analogRead(BATTERY_PIN); // prime ADC for battery readings
 
   // Bring up rails BEFORE touching OLED
-  pinMode(CHARGER_DETECT_PIN, INPUT);       // expects 0/5V from divider
+  pinMode(CHARGER_DETECT_PIN, INPUT_PULLUP); // pulled LOW when charger jack is removed
   pinMode(SWITCH_DETECT_PIN,  INPUT_PULLUP);// LOW when switch ON (change to INPUT if externally driven)
 
   Timer1.initialize(BUTTON_SCAN_INTERVAL_US); // 10ms button scan intervals
