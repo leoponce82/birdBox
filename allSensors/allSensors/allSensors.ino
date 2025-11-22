@@ -24,7 +24,7 @@ volatile uint8_t sensorUpdateTickCounter = 0;
 
 // --- Power / control pins ---
 #define POWER_HOLD_PIN     26   // output, goes HIGH after boot
-#define CHARGER_DETECT_PIN 27   // input, 5V via divider when charger is present
+#define CHARGER_DETECT_PIN 27   // input, HIGH when charger jack is inserted (floating jack, pulled up when present)
 #define SWITCH_DETECT_PIN  25   // input, reads LOW when main switch is ON
 #define GATE_5V_PIN        23   // output, goes HIGH after boot
 #define BATTERY_PIN        A0   // input, battery voltage via divider (R1=100k, R2=47k)
@@ -889,6 +889,20 @@ int batteryPercentFromVoltage(float voltage) {
   return (int)(pct + 0.5f);
 }
 
+bool isChargerConnected() {
+  return digitalRead(CHARGER_DETECT_PIN) == HIGH;
+}
+
+void drawChargingBolt(uint8_t x, uint8_t y) {
+  // Draw a small lightning bolt using layered triangles so it is visible
+  // against both filled and empty battery backgrounds.
+  display.fillTriangle(x, y, x + 4, y + 3, x + 1, y + 3, SSD1306_WHITE);
+  display.fillTriangle(x + 1, y + 3, x + 5, y + 6, x + 2, y + 6, SSD1306_WHITE);
+
+  display.fillTriangle(x + 1, y + 1, x + 3, y + 3, x + 2, y + 3, SSD1306_BLACK);
+  display.fillTriangle(x + 2, y + 4, x + 4, y + 6, x + 3, y + 6, SSD1306_BLACK);
+}
+
 bool shouldShowBatteryIndicator(int percent, unsigned long nowMs) {
   if (percent > 20) return true;
   return ((nowMs / 1000) % 2) == 0;
@@ -897,6 +911,7 @@ bool shouldShowBatteryIndicator(int percent, unsigned long nowMs) {
 void drawBatteryStatus(unsigned long nowMs) {
   float voltage = readBatteryVoltage();
   int percent = batteryPercentFromVoltage(voltage);
+  bool chargerConnected = isChargerConnected();
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -922,6 +937,12 @@ void drawBatteryStatus(unsigned long nowMs) {
     display.print(F("% "));
     display.print(voltage, 1);
     display.print(F("V"));
+
+    if (chargerConnected) {
+      const uint8_t boltX = iconX + 5;
+      const uint8_t boltY = iconY + 1;
+      drawChargingBolt(boltX, boltY);
+    }
   }
 }
 
@@ -1469,7 +1490,7 @@ void setup() {
   analogRead(BATTERY_PIN); // prime ADC for battery readings
 
   // Bring up rails BEFORE touching OLED
-  pinMode(CHARGER_DETECT_PIN, INPUT);       // expects 0/5V from divider
+  pinMode(CHARGER_DETECT_PIN, INPUT_PULLUP); // pulled LOW when charger jack is removed
   pinMode(SWITCH_DETECT_PIN,  INPUT_PULLUP);// LOW when switch ON (change to INPUT if externally driven)
 
   Timer1.initialize(BUTTON_SCAN_INTERVAL_US); // 10ms button scan intervals
