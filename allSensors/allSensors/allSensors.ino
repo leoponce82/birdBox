@@ -939,8 +939,8 @@ void drawBatteryStatus(unsigned long nowMs) {
     display.print(F("V"));
 
     if (chargerConnected) {
-      const uint8_t boltX = iconX + 5;
-      const uint8_t boltY = iconY + 1;
+      const uint8_t boltX = display.getCursorX() + 2;
+      const uint8_t boltY = iconY;
       drawChargingBolt(boltX, boltY);
     }
   }
@@ -1005,15 +1005,12 @@ bool peckDetectedRecently(unsigned long nowMs) {
 void drawPeckIndicator(unsigned long nowMs) {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.fillRect(90, 0, 90, 10, SSD1306_BLACK);
-  display.setCursor(90, 0);
+  display.fillRect(118, 0, 10, 10, SSD1306_BLACK);
 
-  if (!accelReady) {
-    display.print(F("PECK --"));
-  } else if (peckDetectedRecently(nowMs)) {
-    display.print(F("PECK!"));
-  } else {
-    display.print(F("Calm"));
+  if (accelReady && peckDetectedRecently(nowMs)) {
+    const uint8_t x = 122;
+    const uint8_t y = 1;
+    display.fillTriangle(x, y + 6, x + 6, y + 6, x + 3, y, SSD1306_WHITE);
   }
 }
 
