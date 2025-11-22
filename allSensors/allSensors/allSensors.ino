@@ -894,13 +894,34 @@ bool isChargerConnected() {
 }
 
 void drawChargingBolt(uint8_t x, uint8_t y) {
-  // Draw a small lightning bolt using layered triangles so it is visible
-  // against both filled and empty battery backgrounds.
-  display.fillTriangle(x, y, x + 4, y + 3, x + 1, y + 3, SSD1306_WHITE);
-  display.fillTriangle(x + 1, y + 3, x + 5, y + 6, x + 2, y + 6, SSD1306_WHITE);
+  // 5x7 pixel bolt silhouette designed for a single text row (y..y+6)
+  // Pattern (1 = white pixel):
+  //  .#...
+  //  .##..
+  //  .##..
+  //  ..##.
+  //  ..##.
+  //  ...##
+  //  ...#.
+  static const uint8_t BOLT_W = 5;
+  static const uint8_t BOLT_H = 7;
+  static const bool boltMask[BOLT_H][BOLT_W] = {
+    {0, 1, 1, 0, 0},
+    {0, 1, 1, 1, 0},
+    {0, 1, 1, 1, 0},
+    {0, 0, 1, 1, 0},
+    {0, 0, 1, 1, 0},
+    {0, 0, 0, 1, 1},
+    {0, 0, 0, 1, 0}
+  };
 
-  display.fillTriangle(x + 1, y + 1, x + 3, y + 3, x + 2, y + 3, SSD1306_BLACK);
-  display.fillTriangle(x + 2, y + 4, x + 4, y + 6, x + 3, y + 6, SSD1306_BLACK);
+  for (uint8_t row = 0; row < BOLT_H; row++) {
+    for (uint8_t col = 0; col < BOLT_W; col++) {
+      if (boltMask[row][col]) {
+        display.drawPixel(x + col, y + row, SSD1306_WHITE);
+      }
+    }
+  }
 }
 
 bool shouldShowBatteryIndicator(int percent, unsigned long nowMs) {
@@ -915,13 +936,13 @@ void drawBatteryStatus(unsigned long nowMs) {
 
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.fillRect(0, 0, 64, 10, SSD1306_BLACK);
+  display.fillRect(0, 0, SCREEN_WIDTH, 10, SSD1306_BLACK);
 
   if (shouldShowBatteryIndicator(percent, nowMs)) {
-    const uint8_t iconX = 0;
-    const uint8_t iconY = 1;
     const uint8_t iconW = 16;
     const uint8_t iconH = 8;
+    const uint8_t iconX = SCREEN_WIDTH - iconW - 2; // tuck into the top-right corner
+    const uint8_t iconY = 0;
 
     display.drawRect(iconX, iconY, iconW, iconH, SSD1306_WHITE);
     display.fillRect(iconX + iconW, iconY + 2, 2, iconH - 4, SSD1306_WHITE);
@@ -932,7 +953,7 @@ void drawBatteryStatus(unsigned long nowMs) {
     uint8_t fillW = (uint8_t)((iconW - 2) * cappedPercent / 100.0f);
     display.fillRect(iconX + 1, iconY + 1, fillW, iconH - 2, SSD1306_WHITE);
 
-    display.setCursor(iconX + iconW + 4, 0);
+    display.setCursor(0, 0);
     display.print(percent);
     display.print(F("% "));
     display.print(voltage, 1);
