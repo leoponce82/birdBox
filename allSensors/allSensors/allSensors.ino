@@ -145,7 +145,7 @@ const unsigned int STEP_PULSE_FOOD_US = 1000; // high/low pulse width for food m
 // Fine-tune how far past the hall sensor the tunnel should travel to align with the opening
 const uint8_t ALIGNMENT_OVERSHOOT_STEPS = 10;
 // Additional steps to park the tunnel halfway between two sides (~23 degrees)
-const uint16_t TUNNEL_PARK_STEPS = (uint16_t)((STEPS_PER_REV * (long)MICROSTEPS * 23L) / 360L);
+const uint16_t TUNNEL_PARK_STEPS = (uint16_t)((STEPS_PER_REV * (long)MICROSTEPS * 45L) / 360L);
 
 // --- state for motor trigger & switch edge ---
 unsigned long lastMoveMs = 0;
