@@ -13,7 +13,7 @@
 #include <SD.h>
 
 // Flag to control whether the Uno R4 connection is expected/required
-const bool UNO_R4_EXPECTED = true;
+bool expectUnoR4 = true;
 
 const unsigned long BUTTON_SCAN_INTERVAL_US = 50; // 10 ms between button scans
 const uint8_t SENSOR_UPDATE_TICKS = 20;              // 20 * 10 ms = 200 ms sensor updates = 5Hz
@@ -260,11 +260,11 @@ uint8_t currentTunnelSide = 1;
 const uint8_t DEFAULT_SEQUENCE_TEMPLATE[DEFAULT_SEQUENCE_LENGTH] = {1, 2, 3, 4};
 
 const uint32_t SEQUENCE_STORAGE_MAGIC = 0xB105EED1;
-const uint8_t SEQUENCE_STORAGE_VERSION = 2;
+const uint8_t SEQUENCE_STORAGE_VERSION = 3;
 
 const int SEQUENCE_STORAGE_ADDR = 0;
 
-struct SequenceStorage {
+struct SequenceStorageV2 {
   uint32_t magic;
   uint8_t version;
   uint8_t lengths[SIDE_COUNT];
@@ -278,6 +278,32 @@ struct SequenceStorage {
     sum += (uint8_t)((magic >> 16) & 0xFF);
     sum += (uint8_t)((magic >> 24) & 0xFF);
     sum += version;
+    for (uint8_t side = 0; side < SIDE_COUNT; side++) {
+      sum += lengths[side];
+      for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
+        sum += sequences[side][i];
+      }
+    }
+    return (uint8_t)(sum & 0xFF);
+  }
+};
+
+struct SequenceStorage {
+  uint32_t magic;
+  uint8_t version;
+  uint8_t expectUnoR4Enabled;
+  uint8_t lengths[SIDE_COUNT];
+  uint8_t sequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
+  uint8_t checksum;
+
+  uint8_t computeChecksum() const {
+    uint16_t sum = 0;
+    sum += (uint8_t)(magic & 0xFF);
+    sum += (uint8_t)((magic >> 8) & 0xFF);
+    sum += (uint8_t)((magic >> 16) & 0xFF);
+    sum += (uint8_t)((magic >> 24) & 0xFF);
+    sum += version;
+    sum += expectUnoR4Enabled;
     for (uint8_t side = 0; side < SIDE_COUNT; side++) {
       sum += lengths[side];
       for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
@@ -308,12 +334,14 @@ void applyDefaultSequences() {
     }
   }
   resetSequenceTracking();
+  expectUnoR4 = true;
 }
 
 void saveSequencesToEEPROM() {
   SequenceStorage data;
   data.magic = SEQUENCE_STORAGE_MAGIC;
   data.version = SEQUENCE_STORAGE_VERSION;
+  data.expectUnoR4Enabled = expectUnoR4 ? 1 : 0;
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
     data.lengths[side] = storedSequenceLengths[side];
     for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
@@ -326,38 +354,88 @@ void saveSequencesToEEPROM() {
 }
 
 void loadSequencesFromEEPROM() {
-  SequenceStorage data;
-  EEPROM.get(SEQUENCE_STORAGE_ADDR, data);
+  uint32_t magic = 0;
+  EEPROM.get(SEQUENCE_STORAGE_ADDR, magic);
 
-  bool valid = (data.magic == SEQUENCE_STORAGE_MAGIC);
+  if (magic != SEQUENCE_STORAGE_MAGIC) {
+    applyDefaultSequences();
+    saveSequencesToEEPROM();
+    return;
+  }
+
+  uint8_t version = 0;
+  EEPROM.get(SEQUENCE_STORAGE_ADDR + sizeof(uint32_t), version);
+
+  bool valid = true;
   bool needsMigration = false;
-  if (valid) {
-    if (data.version == SEQUENCE_STORAGE_VERSION) {
-      // up-to-date
-    } else if (data.version == 1) {
-      needsMigration = true;
-    } else {
-      valid = false;
+  bool swapLegacyMenuButtons = false;
+
+  if (version == SEQUENCE_STORAGE_VERSION) {
+    SequenceStorage data;
+    EEPROM.get(SEQUENCE_STORAGE_ADDR, data);
+    uint8_t expectedChecksum = data.computeChecksum();
+    valid = (expectedChecksum == data.checksum);
+
+    if (valid) {
+      for (uint8_t side = 0; side < SIDE_COUNT && valid; side++) {
+        uint8_t length = data.lengths[side];
+        if (length == 0 || length > MAX_SEQUENCE_LENGTH) {
+          valid = false;
+          break;
+        }
+        for (uint8_t i = 0; i < length; i++) {
+          uint8_t value = data.sequences[side][i];
+          if (value < 1 || value > 4) {
+            valid = false;
+            break;
+          }
+        }
+      }
     }
+
+    if (!valid) {
+      applyDefaultSequences();
+      saveSequencesToEEPROM();
+      return;
+    }
+
+    expectUnoR4 = (data.expectUnoR4Enabled != 0);
+    for (uint8_t side = 0; side < SIDE_COUNT; side++) {
+      storedSequenceLengths[side] = data.lengths[side];
+      for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
+        storedSequences[side][i] = data.sequences[side][i];
+      }
+    }
+    resetSequenceTracking();
+    return;
+  }
+
+  SequenceStorageV2 legacy;
+  EEPROM.get(SEQUENCE_STORAGE_ADDR, legacy);
+
+  if (version == 2) {
+    needsMigration = true;
+  } else if (version == 1) {
+    needsMigration = true;
+    swapLegacyMenuButtons = true;
+  } else {
+    valid = false;
   }
 
   if (valid) {
-    uint8_t expectedChecksum = data.computeChecksum();
-
-    if (expectedChecksum != data.checksum) {
-      valid = false;
-    }
+    uint8_t expectedChecksum = legacy.computeChecksum();
+    valid = (expectedChecksum == legacy.checksum);
   }
 
   if (valid) {
     for (uint8_t side = 0; side < SIDE_COUNT && valid; side++) {
-      uint8_t length = data.lengths[side];
+      uint8_t length = legacy.lengths[side];
       if (length == 0 || length > MAX_SEQUENCE_LENGTH) {
         valid = false;
         break;
       }
       for (uint8_t i = 0; i < length; i++) {
-        uint8_t value = data.sequences[side][i];
+        uint8_t value = legacy.sequences[side][i];
         if (value < 1 || value > 4) {
           valid = false;
           break;
@@ -372,11 +450,12 @@ void loadSequencesFromEEPROM() {
     return;
   }
 
+  expectUnoR4 = true;
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
-    storedSequenceLengths[side] = data.lengths[side];
+    storedSequenceLengths[side] = legacy.lengths[side];
     for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
-      uint8_t value = data.sequences[side][i];
-      if (needsMigration) {
+      uint8_t value = legacy.sequences[side][i];
+      if (swapLegacyMenuButtons) {
         if (value == 3) value = 4;
         else if (value == 4) value = 3;
       }
@@ -384,6 +463,7 @@ void loadSequencesFromEEPROM() {
     }
   }
   resetSequenceTracking();
+
   if (needsMigration) {
     saveSequencesToEEPROM();
   }
@@ -608,7 +688,7 @@ void resetChannelGroup(uint8_t ch) {
 }
 
 bool connectUnoR4() {
-  if (!UNO_R4_EXPECTED) {
+  if (!expectUnoR4) {
     return true;
   }
   UNO_R4_SELECT();
@@ -633,7 +713,7 @@ bool connectUnoR4() {
 
 // Sends header + 12 uint16_t as little-endian (lo,hi)
 bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
-  if (!UNO_R4_EXPECTED) {
+  if (!expectUnoR4) {
     return true;
   }
   UNO_R4_SELECT();
@@ -646,7 +726,7 @@ bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
     Wire.write((uint8_t)((v >> 8) & 0xFF)); // high byte
   }
   uint8_t err = Wire.endTransmission();
-  if (err != 0 && UNO_R4_EXPECTED) {
+  if (err != 0 && expectUnoR4) {
     OLED_SELECT();
     display.clearDisplay();
     display.setTextSize(2);
@@ -660,7 +740,7 @@ bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
   return (err == 0);
 }
 bool sendDistancesToR4_chunked(const uint16_t* vals) {
-  if (!UNO_R4_EXPECTED) {
+  if (!expectUnoR4) {
     return true;
   }
   for (uint8_t off = 0; off < SENSOR_COUNT; off += 6) { // 6 values = 12 bytes
@@ -674,7 +754,7 @@ bool sendDistancesToR4_chunked(const uint16_t* vals) {
       Wire.write((uint8_t)(v >> 8));
     }
     uint8_t err = Wire.endTransmission();
-    if (err && UNO_R4_EXPECTED) {
+    if (err && expectUnoR4) {
       // show err on OLED if you want
       return false;
     }
@@ -685,7 +765,7 @@ bool sendDistancesToR4_chunked(const uint16_t* vals) {
 
 // Send distances in framed chunks (4 values per frame)
 bool sendDistancesFramed(const uint16_t *vals) {
-  if (!UNO_R4_EXPECTED) {
+  if (!expectUnoR4) {
     return true;
   }
   const uint8_t CHUNK = 4;  // 4 values = 8 data bytes + 3 header = 11 total
@@ -707,7 +787,7 @@ bool sendDistancesFramed(const uint16_t *vals) {
     }
 
     uint8_t err = Wire.endTransmission();    // 0 = OK
-    if (err != 0 && UNO_R4_EXPECTED) {
+    if (err != 0 && expectUnoR4) {
       // Show exact error code to help if this ever trips again
       tcaSelect(SCREEN_CHANNEL);
       display.clearDisplay();
@@ -1112,7 +1192,9 @@ void showMenuMoreOptions() {
   display.println(F("Options"));
   display.println(F("1=Factory reset"));
   display.println(F("2=Exit menu"));
-  display.println(F("3/4=Back"));
+  display.print(F("3=Uno R4: "));
+  display.println(expectUnoR4 ? F("On") : F("Off"));
+  display.println(F("4=Back"));
   display.display();
 }
 
@@ -1301,7 +1383,11 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         showMenuResetConfirm();
       } else if (number == 2) {
         exitMenu();
-      } else if (number == 3 || number == 4) {
+      } else if (number == 3) {
+        expectUnoR4 = !expectUnoR4;
+        saveSequencesToEEPROM();
+        showMenuMoreOptions();
+      } else if (number == 4) {
         currentMode = MODE_MENU_CONFIRM;
         showMenuConfirm();
 
@@ -1613,7 +1699,7 @@ void setup() {
 
   // Uno R4 on channel 4 with 10s timeout
   bool unoR4Ok = false;
-  if (UNO_R4_EXPECTED) {
+  if (expectUnoR4) {
     unsigned long startAttempt = millis();
     while (millis() - startAttempt < 10000 && !unoR4Ok) {
       unoR4Ok = connectUnoR4();
@@ -1624,7 +1710,7 @@ void setup() {
   display.clearDisplay();
   display.setCursor(0,0);
   display.print(F("UNO R4: "));
-  if (UNO_R4_EXPECTED) {
+  if (expectUnoR4) {
     display.println(unoR4Ok ? F("OK") : F("FAIL"));
   } else {
     display.println(F("SKIP"));
