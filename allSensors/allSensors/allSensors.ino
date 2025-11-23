@@ -548,7 +548,8 @@ void motorStep(int steps, bool dirCW) {
     digitalWrite(STEP_PIN, LOW);
     delayMicroseconds(STEP_PULSE_US);
   }
-  digitalWrite(EN_PIN, HIGH); // disable driver to remove holding torque
+  // delayMicroseconds(1000000);
+  // digitalWrite(EN_PIN, HIGH); // disable driver to remove holding torque
 }
 
 void motorStepFood(int steps, bool dirCW) {
@@ -606,7 +607,7 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
     }
   }
 
-  digitalWrite(EN_PIN, HIGH);
+  // digitalWrite(EN_PIN, HIGH);
   return aligned || digitalRead(hallPin) == LOW;
 }
 
@@ -1262,6 +1263,8 @@ void deliverRewardForSide(uint8_t side) {
     return;
   }
   motorStepFood(STEPS_90_FOOD, true);
+  digitalWrite(EN_PIN, HIGH); // tutn off tunnel motor after food has beel delivered
+
   lastMoveMs = millis();
 }
 
