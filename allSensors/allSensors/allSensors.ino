@@ -260,11 +260,11 @@ uint8_t currentTunnelSide = 1;
 const uint8_t DEFAULT_SEQUENCE_TEMPLATE[DEFAULT_SEQUENCE_LENGTH] = {1, 2, 3, 4};
 
 const uint32_t SEQUENCE_STORAGE_MAGIC = 0xB105EED1;
-const uint8_t SEQUENCE_STORAGE_VERSION = 2;
+const uint8_t SEQUENCE_STORAGE_VERSION = 3;
 
 const int SEQUENCE_STORAGE_ADDR = 0;
 
-struct SequenceStorage {
+struct SequenceStorageV2 {
   uint32_t magic;
   uint8_t version;
   uint8_t lengths[SIDE_COUNT];
@@ -278,6 +278,32 @@ struct SequenceStorage {
     sum += (uint8_t)((magic >> 16) & 0xFF);
     sum += (uint8_t)((magic >> 24) & 0xFF);
     sum += version;
+    for (uint8_t side = 0; side < SIDE_COUNT; side++) {
+      sum += lengths[side];
+      for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
+        sum += sequences[side][i];
+      }
+    }
+    return (uint8_t)(sum & 0xFF);
+  }
+};
+
+struct SequenceStorage {
+  uint32_t magic;
+  uint8_t version;
+  uint8_t expectUnoR4Enabled;
+  uint8_t lengths[SIDE_COUNT];
+  uint8_t sequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
+  uint8_t checksum;
+
+  uint8_t computeChecksum() const {
+    uint16_t sum = 0;
+    sum += (uint8_t)(magic & 0xFF);
+    sum += (uint8_t)((magic >> 8) & 0xFF);
+    sum += (uint8_t)((magic >> 16) & 0xFF);
+    sum += (uint8_t)((magic >> 24) & 0xFF);
+    sum += version;
+    sum += expectUnoR4Enabled;
     for (uint8_t side = 0; side < SIDE_COUNT; side++) {
       sum += lengths[side];
       for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
@@ -308,12 +334,14 @@ void applyDefaultSequences() {
     }
   }
   resetSequenceTracking();
+  expectUnoR4 = true;
 }
 
 void saveSequencesToEEPROM() {
   SequenceStorage data;
   data.magic = SEQUENCE_STORAGE_MAGIC;
   data.version = SEQUENCE_STORAGE_VERSION;
+  data.expectUnoR4Enabled = expectUnoR4 ? 1 : 0;
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
     data.lengths[side] = storedSequenceLengths[side];
     for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
@@ -326,38 +354,88 @@ void saveSequencesToEEPROM() {
 }
 
 void loadSequencesFromEEPROM() {
-  SequenceStorage data;
-  EEPROM.get(SEQUENCE_STORAGE_ADDR, data);
+  uint32_t magic = 0;
+  EEPROM.get(SEQUENCE_STORAGE_ADDR, magic);
 
-  bool valid = (data.magic == SEQUENCE_STORAGE_MAGIC);
+  if (magic != SEQUENCE_STORAGE_MAGIC) {
+    applyDefaultSequences();
+    saveSequencesToEEPROM();
+    return;
+  }
+
+  uint8_t version = 0;
+  EEPROM.get(SEQUENCE_STORAGE_ADDR + sizeof(uint32_t), version);
+
+  bool valid = true;
   bool needsMigration = false;
-  if (valid) {
-    if (data.version == SEQUENCE_STORAGE_VERSION) {
-      // up-to-date
-    } else if (data.version == 1) {
-      needsMigration = true;
-    } else {
-      valid = false;
+  bool swapLegacyMenuButtons = false;
+
+  if (version == SEQUENCE_STORAGE_VERSION) {
+    SequenceStorage data;
+    EEPROM.get(SEQUENCE_STORAGE_ADDR, data);
+    uint8_t expectedChecksum = data.computeChecksum();
+    valid = (expectedChecksum == data.checksum);
+
+    if (valid) {
+      for (uint8_t side = 0; side < SIDE_COUNT && valid; side++) {
+        uint8_t length = data.lengths[side];
+        if (length == 0 || length > MAX_SEQUENCE_LENGTH) {
+          valid = false;
+          break;
+        }
+        for (uint8_t i = 0; i < length; i++) {
+          uint8_t value = data.sequences[side][i];
+          if (value < 1 || value > 4) {
+            valid = false;
+            break;
+          }
+        }
+      }
     }
+
+    if (!valid) {
+      applyDefaultSequences();
+      saveSequencesToEEPROM();
+      return;
+    }
+
+    expectUnoR4 = (data.expectUnoR4Enabled != 0);
+    for (uint8_t side = 0; side < SIDE_COUNT; side++) {
+      storedSequenceLengths[side] = data.lengths[side];
+      for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
+        storedSequences[side][i] = data.sequences[side][i];
+      }
+    }
+    resetSequenceTracking();
+    return;
+  }
+
+  SequenceStorageV2 legacy;
+  EEPROM.get(SEQUENCE_STORAGE_ADDR, legacy);
+
+  if (version == 2) {
+    needsMigration = true;
+  } else if (version == 1) {
+    needsMigration = true;
+    swapLegacyMenuButtons = true;
+  } else {
+    valid = false;
   }
 
   if (valid) {
-    uint8_t expectedChecksum = data.computeChecksum();
-
-    if (expectedChecksum != data.checksum) {
-      valid = false;
-    }
+    uint8_t expectedChecksum = legacy.computeChecksum();
+    valid = (expectedChecksum == legacy.checksum);
   }
 
   if (valid) {
     for (uint8_t side = 0; side < SIDE_COUNT && valid; side++) {
-      uint8_t length = data.lengths[side];
+      uint8_t length = legacy.lengths[side];
       if (length == 0 || length > MAX_SEQUENCE_LENGTH) {
         valid = false;
         break;
       }
       for (uint8_t i = 0; i < length; i++) {
-        uint8_t value = data.sequences[side][i];
+        uint8_t value = legacy.sequences[side][i];
         if (value < 1 || value > 4) {
           valid = false;
           break;
@@ -372,11 +450,12 @@ void loadSequencesFromEEPROM() {
     return;
   }
 
+  expectUnoR4 = true;
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
-    storedSequenceLengths[side] = data.lengths[side];
+    storedSequenceLengths[side] = legacy.lengths[side];
     for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
-      uint8_t value = data.sequences[side][i];
-      if (needsMigration) {
+      uint8_t value = legacy.sequences[side][i];
+      if (swapLegacyMenuButtons) {
         if (value == 3) value = 4;
         else if (value == 4) value = 3;
       }
@@ -384,6 +463,7 @@ void loadSequencesFromEEPROM() {
     }
   }
   resetSequenceTracking();
+
   if (needsMigration) {
     saveSequencesToEEPROM();
   }
@@ -1305,6 +1385,7 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         exitMenu();
       } else if (number == 3) {
         expectUnoR4 = !expectUnoR4;
+        saveSequencesToEEPROM();
         showMenuMoreOptions();
       } else if (number == 4) {
         currentMode = MODE_MENU_CONFIRM;
