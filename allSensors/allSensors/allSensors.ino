@@ -13,7 +13,7 @@
 #include <SD.h>
 
 // Flag to control whether the Uno R4 connection is expected/required
-const bool UNO_R4_EXPECTED = true;
+bool expectUnoR4 = true;
 
 const unsigned long BUTTON_SCAN_INTERVAL_US = 50; // 10 ms between button scans
 const uint8_t SENSOR_UPDATE_TICKS = 20;              // 20 * 10 ms = 200 ms sensor updates = 5Hz
@@ -608,7 +608,7 @@ void resetChannelGroup(uint8_t ch) {
 }
 
 bool connectUnoR4() {
-  if (!UNO_R4_EXPECTED) {
+  if (!expectUnoR4) {
     return true;
   }
   UNO_R4_SELECT();
@@ -633,7 +633,7 @@ bool connectUnoR4() {
 
 // Sends header + 12 uint16_t as little-endian (lo,hi)
 bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
-  if (!UNO_R4_EXPECTED) {
+  if (!expectUnoR4) {
     return true;
   }
   UNO_R4_SELECT();
@@ -646,7 +646,7 @@ bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
     Wire.write((uint8_t)((v >> 8) & 0xFF)); // high byte
   }
   uint8_t err = Wire.endTransmission();
-  if (err != 0 && UNO_R4_EXPECTED) {
+  if (err != 0 && expectUnoR4) {
     OLED_SELECT();
     display.clearDisplay();
     display.setTextSize(2);
@@ -660,7 +660,7 @@ bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
   return (err == 0);
 }
 bool sendDistancesToR4_chunked(const uint16_t* vals) {
-  if (!UNO_R4_EXPECTED) {
+  if (!expectUnoR4) {
     return true;
   }
   for (uint8_t off = 0; off < SENSOR_COUNT; off += 6) { // 6 values = 12 bytes
@@ -674,7 +674,7 @@ bool sendDistancesToR4_chunked(const uint16_t* vals) {
       Wire.write((uint8_t)(v >> 8));
     }
     uint8_t err = Wire.endTransmission();
-    if (err && UNO_R4_EXPECTED) {
+    if (err && expectUnoR4) {
       // show err on OLED if you want
       return false;
     }
@@ -685,7 +685,7 @@ bool sendDistancesToR4_chunked(const uint16_t* vals) {
 
 // Send distances in framed chunks (4 values per frame)
 bool sendDistancesFramed(const uint16_t *vals) {
-  if (!UNO_R4_EXPECTED) {
+  if (!expectUnoR4) {
     return true;
   }
   const uint8_t CHUNK = 4;  // 4 values = 8 data bytes + 3 header = 11 total
@@ -707,7 +707,7 @@ bool sendDistancesFramed(const uint16_t *vals) {
     }
 
     uint8_t err = Wire.endTransmission();    // 0 = OK
-    if (err != 0 && UNO_R4_EXPECTED) {
+    if (err != 0 && expectUnoR4) {
       // Show exact error code to help if this ever trips again
       tcaSelect(SCREEN_CHANNEL);
       display.clearDisplay();
@@ -1112,7 +1112,9 @@ void showMenuMoreOptions() {
   display.println(F("Options"));
   display.println(F("1=Factory reset"));
   display.println(F("2=Exit menu"));
-  display.println(F("3/4=Back"));
+  display.print(F("3=Uno R4: "));
+  display.println(expectUnoR4 ? F("On") : F("Off"));
+  display.println(F("4=Back"));
   display.display();
 }
 
@@ -1301,7 +1303,10 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         showMenuResetConfirm();
       } else if (number == 2) {
         exitMenu();
-      } else if (number == 3 || number == 4) {
+      } else if (number == 3) {
+        expectUnoR4 = !expectUnoR4;
+        showMenuMoreOptions();
+      } else if (number == 4) {
         currentMode = MODE_MENU_CONFIRM;
         showMenuConfirm();
 
@@ -1613,7 +1618,7 @@ void setup() {
 
   // Uno R4 on channel 4 with 10s timeout
   bool unoR4Ok = false;
-  if (UNO_R4_EXPECTED) {
+  if (expectUnoR4) {
     unsigned long startAttempt = millis();
     while (millis() - startAttempt < 10000 && !unoR4Ok) {
       unoR4Ok = connectUnoR4();
@@ -1624,7 +1629,7 @@ void setup() {
   display.clearDisplay();
   display.setCursor(0,0);
   display.print(F("UNO R4: "));
-  if (UNO_R4_EXPECTED) {
+  if (expectUnoR4) {
     display.println(unoR4Ok ? F("OK") : F("FAIL"));
   } else {
     display.println(F("SKIP"));
