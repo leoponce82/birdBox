@@ -136,8 +136,8 @@ void timerISR() {
 #define STEPS_PER_REV      200     // 1.8° motor
 #define STEPS_PER_REV_FOOD  200     // gear motor for food dispenser
 const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter turn main motor
-const int STEPS_90_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 4;  // quarter turn food motor
-const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 20L) / 360L); // ~20° back-off
+const int STEPS_45_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 8;  // quarter turn food motor
+const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 1L) / 360L); // ~20° back-off
 
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 1500;   // high/low pulse width (slower for precise tunnel alignment)
@@ -542,12 +542,15 @@ void oledPrintf(uint8_t x, uint8_t y, const __FlashStringHelper* label, int valu
 void motorStep(int steps, bool dirCW) {
   digitalWrite(EN_PIN, LOW); // enable driver
   digitalWrite(DIR_PIN, dirCW ? HIGH : LOW);
-  delayMicroseconds(2); // DIR setup time
+  // delayMicroseconds(2); // DIR setup time
+  delay(2);
   for (int i = 0; i < steps; i++) {
     digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(STEP_PULSE_US);
+    // delayMicroseconds(STEP_PULSE_US);
+    delay(2);
     digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(STEP_PULSE_US);
+    // delayMicroseconds(STEP_PULSE_US);
+    delay(2);
   }
   // delayMicroseconds(1000000);
   // digitalWrite(EN_PIN, HIGH); // disable driver to remove holding torque
@@ -556,13 +559,17 @@ void motorStep(int steps, bool dirCW) {
 void motorStepFood(int steps, bool dirCW, bool disableAfter = true) {
   digitalWrite(EN_PIN2, LOW); // enable driver
   digitalWrite(DIR_PIN2, dirCW ? HIGH : LOW);
-  delayMicroseconds(2); // DIR setup time
+  // delayMicroseconds(2); // DIR setup time
+  delay(2);
   for (int i = 0; i < steps; i++) {
     digitalWrite(STEP_PIN2, HIGH);
-    delayMicroseconds(STEP_PULSE_FOOD_US);
+    // delayMicroseconds(STEP_PULSE_FOOD_US);
+    delay(2);
     digitalWrite(STEP_PIN2, LOW);
-    delayMicroseconds(STEP_PULSE_FOOD_US);
+    // delayMicroseconds(STEP_PULSE_FOOD_US);
+    delay(2);
   }
+
   if (disableAfter) {
     digitalWrite(EN_PIN2, HIGH); // disable driver to remove holding torque
   }
@@ -583,12 +590,15 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
   unsigned long stepsTaken = 0;
   digitalWrite(EN_PIN, LOW);
   digitalWrite(DIR_PIN, dirCW ? HIGH : LOW);
-  delayMicroseconds(2);
+  // delayMicroseconds(2);
+  delay(2);
   for (unsigned long step = 0; step < maxSteps; step++) {
     digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(STEP_PULSE_US);
+    // delayMicroseconds(STEP_PULSE_US);
+    delay(2);
     digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(STEP_PULSE_US);
+    // delayMicroseconds(STEP_PULSE_US);
+    delay(2);
     stepsTaken++;
     if (digitalRead(hallPin) == LOW) {
       aligned = true;
@@ -604,9 +614,11 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
     }
     for (unsigned long i = 0; i < overshootSteps; i++) {
       digitalWrite(STEP_PIN, HIGH);
-      delayMicroseconds(STEP_PULSE_US);
+      // delayMicroseconds(STEP_PULSE_US);
+      delay(2);
       digitalWrite(STEP_PIN, LOW);
-      delayMicroseconds(STEP_PULSE_US);
+      // delayMicroseconds(STEP_PULSE_US);
+      delay(2);
     }
   }
 
@@ -1265,8 +1277,8 @@ void deliverRewardForSide(uint8_t side) {
   if (!rotateTunnelToSide(side)) {
     return;
   }
-  motorStepFood(STEPS_DELOCK_FOOD, false, false);
-  motorStepFood(STEPS_90_FOOD, true);
+  // motorStepFood(STEPS_DELOCK_FOOD, false, false);
+  motorStepFood(STEPS_45_FOOD, true);
   digitalWrite(EN_PIN, HIGH); // tutn off tunnel motor after food has beel delivered
 
   lastMoveMs = millis();
