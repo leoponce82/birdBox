@@ -1279,7 +1279,9 @@ void deliverRewardForSide(uint8_t side) {
   }
   // motorStepFood(STEPS_DELOCK_FOOD, false, false);
   motorStepFood(STEPS_45_FOOD, true);
-  digitalWrite(EN_PIN, HIGH); // tutn off tunnel motor after food has beel delivered
+
+  delay(1000); // keep tunnel motor torqued during and briefly after food delivery
+  digitalWrite(EN_PIN, HIGH); // turn off tunnel motor after feeding completes
 
   lastMoveMs = millis();
 }
