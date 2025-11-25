@@ -1277,8 +1277,13 @@ void deliverRewardForSide(uint8_t side) {
   if (!rotateTunnelToSide(side)) {
     return;
   }
-  // motorStepFood(STEPS_DELOCK_FOOD, false, false);
-  motorStepFood(STEPS_45_FOOD, true);
+  // Alternate small clockwise/anticlockwise food steps: 1,1,2,2,3,3
+  motorStepFood(1, true, false);
+  motorStepFood(1, false, false);
+  motorStepFood(2, true, false);
+  motorStepFood(2, false, false);
+  motorStepFood(3, true, false);
+  motorStepFood(3, false, true); // disable food motor after sequence
 
   delay(1000); // keep tunnel motor torqued during and briefly after food delivery
   digitalWrite(EN_PIN, HIGH); // turn off tunnel motor after feeding completes
