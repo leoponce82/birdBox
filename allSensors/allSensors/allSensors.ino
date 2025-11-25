@@ -137,6 +137,7 @@ void timerISR() {
 #define STEPS_PER_REV_FOOD  200     // gear motor for food dispenser
 const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter turn main motor
 const int STEPS_90_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 4;  // quarter turn food motor
+const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 20L) / 360L); // ~20° back-off
 
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 1500;   // high/low pulse width (slower for precise tunnel alignment)
@@ -552,7 +553,7 @@ void motorStep(int steps, bool dirCW) {
   // digitalWrite(EN_PIN, HIGH); // disable driver to remove holding torque
 }
 
-void motorStepFood(int steps, bool dirCW) {
+void motorStepFood(int steps, bool dirCW, bool disableAfter = true) {
   digitalWrite(EN_PIN2, LOW); // enable driver
   digitalWrite(DIR_PIN2, dirCW ? HIGH : LOW);
   delayMicroseconds(2); // DIR setup time
@@ -562,7 +563,9 @@ void motorStepFood(int steps, bool dirCW) {
     digitalWrite(STEP_PIN2, LOW);
     delayMicroseconds(STEP_PULSE_FOOD_US);
   }
-  digitalWrite(EN_PIN2, HIGH); // disable driver to remove holding torque
+  if (disableAfter) {
+    digitalWrite(EN_PIN2, HIGH); // disable driver to remove holding torque
+  }
 }
 
 bool isSideAligned(uint8_t side) {
@@ -1262,6 +1265,7 @@ void deliverRewardForSide(uint8_t side) {
   if (!rotateTunnelToSide(side)) {
     return;
   }
+  motorStepFood(STEPS_DELOCK_FOOD, false, false);
   motorStepFood(STEPS_90_FOOD, true);
   digitalWrite(EN_PIN, HIGH); // tutn off tunnel motor after food has beel delivered
 
