@@ -1277,7 +1277,7 @@ void deliverRewardForSide(uint8_t side) {
   if (!rotateTunnelToSide(side)) {
     return;
   }
-  // motorStepFood(STEPS_DELOCK_FOOD, false, false);
+  motorStepFood(STEPS_DELOCK_FOOD, false, false);
   motorStepFood(STEPS_45_FOOD, true);
 
   delay(1000); // keep tunnel motor torqued during and briefly after food delivery
