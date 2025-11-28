@@ -15,7 +15,7 @@
 // Flag to control whether the Uno R4 connection is expected/required
 bool expectUnoR4 = true;
 
-const unsigned long BUTTON_SCAN_INTERVAL_US = 50; // 10 ms between button scans
+const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; // 10 ms between button scans
 const uint8_t SENSOR_UPDATE_TICKS = 20;              // 20 * 10 ms = 200 ms sensor updates = 5Hz
 
 volatile uint8_t buttonScanPending = 0;
@@ -38,6 +38,7 @@ const float ADC_REF_V         =      4.028f;
 const uint8_t ADC_RESOLUTION  =       10;   // enforce 10-bit reads for predictable scaling
 const float ADC_MAX_READING   = (1 << ADC_RESOLUTION) - 1;
 
+static unsigned long lastOledFrame = 0;
 
 // -------------------- OLED --------------------
 
@@ -136,7 +137,7 @@ void timerISR() {
 #define STEPS_PER_REV      200     // 1.8° motor
 #define STEPS_PER_REV_FOOD  200     // gear motor for food dispenser
 const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter turn main motor
-const int STEPS_45_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 8;  // quarter turn food motor
+const int STEPS_45_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 2;  // 180 degrees turn food motor
 const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 1L) / 360L); // ~20° back-off
 
 // pulse timing (adjust for your driver/motor)
@@ -563,11 +564,11 @@ void motorStepFood(int steps, bool dirCW, bool disableAfter = true) {
   delay(2);
   for (int i = 0; i < steps; i++) {
     digitalWrite(STEP_PIN2, HIGH);
-    // delayMicroseconds(STEP_PULSE_FOOD_US);
-    delay(2);
+    delayMicroseconds(300);
+    // delay(0.3);
     digitalWrite(STEP_PIN2, LOW);
-    // delayMicroseconds(STEP_PULSE_FOOD_US);
-    delay(2);
+    delayMicroseconds(300);
+    // delay(1);
   }
 
   if (disableAfter) {
@@ -1278,13 +1279,8 @@ void deliverRewardForSide(uint8_t side) {
     return;
   }
 
-  // Alternate small clockwise/anticlockwise food steps: 1,1,2,2,3,3
-  motorStepFood(1, true, false);
-  motorStepFood(1, false, false);
-  motorStepFood(2, true, false);
-  motorStepFood(2, false, false);
-  motorStepFood(3, true, false);
-  motorStepFood(3, false, true); // disable food motor after sequence
+  // motorStepFood(STEPS_DELOCK_FOOD, false, false);
+  motorStepFood(STEPS_45_FOOD, true);
 
 
   delay(1000); // keep tunnel motor torqued during and briefly after food delivery
@@ -1490,39 +1486,42 @@ void readAndSend() {
     return;
   }
 
-  OLED_SELECT();
-  display.clearDisplay();
-  unsigned long nowDisplay = millis();
-  drawStatusHeader(nowDisplay);
-  display.setTextSize(1);
-  for (uint8_t i = 0; i < SENSOR_COUNT; i += 2) {
-    uint8_t y = 8 + (i / 2) * 8;
-    display.setCursor(0, y);
-    display.print(F("S")); display.print(i + 1); display.print(F(":"));
-    if (statuses[i] == 0) display.print(distances[i]);
-    else display.print(F("--"));
-    display.setCursor(64, y);
-    display.print(F("S")); display.print(i + 2); display.print(F(":"));
-    if (statuses[i + 1] == 0) display.print(distances[i + 1]);
-    else display.print(F("--"));
-  }
-  display.setCursor(0,56);
-  int8_t pressedIndex = -1;
-  for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
-    if (buttonState[i] == LOW) {
-      pressedIndex = i;
-      break;
+  if (currentMode == MODE_IDLE && (millis() - lastOledFrame > 100)) {
+    lastOledFrame = millis();
+    OLED_SELECT();
+    display.clearDisplay();
+    unsigned long nowDisplay = millis();
+    drawStatusHeader(nowDisplay);
+    display.setTextSize(1);
+    for (uint8_t i = 0; i < SENSOR_COUNT; i += 2) {
+      uint8_t y = 8 + (i / 2) * 8;
+      display.setCursor(0, y);
+      display.print(F("S")); display.print(i + 1); display.print(F(":"));
+      if (statuses[i] == 0) display.print(distances[i]);
+      else display.print(F("--"));
+      display.setCursor(64, y);
+      display.print(F("S")); display.print(i + 2); display.print(F(":"));
+      if (statuses[i + 1] == 0) display.print(distances[i + 1]);
+      else display.print(F("--"));
     }
-  }
-  if (pressedIndex >= 0) {
-    display.print(F("Button "));
-    display.print(buttonNumbers[pressedIndex]);
-    if (buttonPanels[pressedIndex] != PANEL_UNKNOWN) {
-      display.print(F(", panel "));
-      display.print(buttonPanels[pressedIndex]);
+    display.setCursor(0,56);
+    int8_t pressedIndex = -1;
+    for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+      if (buttonState[i] == LOW) {
+        pressedIndex = i;
+        break;
+      }
     }
+    if (pressedIndex >= 0) {
+      display.print(F("Button "));
+      display.print(buttonNumbers[pressedIndex]);
+      if (buttonPanels[pressedIndex] != PANEL_UNKNOWN) {
+        display.print(F(", panel "));
+        display.print(buttonPanels[pressedIndex]);
+      }
+    }
+    display.display();
   }
-  display.display();
 }
 
 // --- SHUTDOWN SEQUENCE ---
@@ -1576,7 +1575,7 @@ void setup() {
   // Serial.begin(SERIAL_BAUD);
 
   Wire.begin();
-  Wire.setClock(100000); // keep it conservative and rock solid
+  Wire.setClock(400000); // keep it conservative and rock solid
 
   // Power/Control pins
   pinMode(POWER_HOLD_PIN, OUTPUT);
