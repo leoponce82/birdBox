@@ -101,6 +101,7 @@ const unsigned long BASELINE_DURATION_MS = 3000;
 const unsigned long FAST_STABLE_HOLD_MS = 5000;       // stay stable for 5 s before napping
 const unsigned long BASELINE_REFRESH_MS = 180000;     // 3 minutes of steady readings => new baseline
 const uint16_t DISTANCE_BASELINE_TOLERANCE_MM = 25;   // allowable drift before waking
+const uint16_t DISTANCE_MAX_BEHAVIOR_MM = 1000;       // ignore readings beyond 1m for baseline/awake logic
 const float ACCEL_BASELINE_TOLERANCE = 0.08f;         // m/s^2 wiggle room over baseline noise
 const float ENV_TEMP_TOLERANCE_C = 0.6f;
 const float ENV_HUMIDITY_TOLERANCE = 3.0f;
@@ -125,6 +126,7 @@ VL53L1X sensors[SENSOR_COUNT];
 
 struct BaselineValues {
   uint16_t distances[SENSOR_COUNT];
+  bool distanceValid[SENSOR_COUNT];
   float tempC;
   float humidity;
   float accelNoise;
@@ -133,6 +135,7 @@ struct BaselineValues {
 
 struct BaselineAccumulator {
   uint32_t distanceSum[SENSOR_COUNT];
+  uint16_t distanceSamples[SENSOR_COUNT];
   float tempSum;
   float humiditySum;
   float accelNoiseSum;
@@ -1164,7 +1167,10 @@ void resetBaselineAccumulator() {
 
 void recordBaselineSample(const SensorSnapshot& snapshot) {
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-    baselineAcc.distanceSum[i] += snapshot.distances[i];
+    if (snapshot.statuses[i] == 0 && snapshot.distances[i] <= DISTANCE_MAX_BEHAVIOR_MM) {
+      baselineAcc.distanceSum[i] += snapshot.distances[i];
+      baselineAcc.distanceSamples[i]++;
+    }
   }
   if (!isnan(snapshot.tempC)) {
     baselineAcc.tempSum += snapshot.tempC;
@@ -1181,7 +1187,9 @@ void recordBaselineSample(const SensorSnapshot& snapshot) {
 
 void applySnapshotAsBaseline(const SensorSnapshot& snapshot) {
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-    sessionBaseline.distances[i] = snapshot.distances[i];
+    bool valid = (snapshot.statuses[i] == 0 && snapshot.distances[i] <= DISTANCE_MAX_BEHAVIOR_MM);
+    sessionBaseline.distanceValid[i] = valid;
+    sessionBaseline.distances[i] = valid ? snapshot.distances[i] : 0;
   }
   sessionBaseline.tempC = snapshot.tempC;
   sessionBaseline.humidity = snapshot.humidity;
@@ -1194,7 +1202,13 @@ void finalizeBaselineFromAccumulator() {
   if (baselineAcc.samples == 0) return;
 
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-    sessionBaseline.distances[i] = baselineAcc.distanceSum[i] / baselineAcc.samples;
+    if (baselineAcc.distanceSamples[i] > 0) {
+      sessionBaseline.distances[i] = baselineAcc.distanceSum[i] / baselineAcc.distanceSamples[i];
+      sessionBaseline.distanceValid[i] = true;
+    } else {
+      sessionBaseline.distances[i] = 0;
+      sessionBaseline.distanceValid[i] = false;
+    }
   }
   sessionBaseline.tempC = (baselineAcc.tempSamples > 0) ? (baselineAcc.tempSum / baselineAcc.tempSamples) : NAN;
   sessionBaseline.humidity = (baselineAcc.humiditySamples > 0) ? (baselineAcc.humiditySum / baselineAcc.humiditySamples) : NAN;
@@ -1207,7 +1221,12 @@ bool snapshotWithinBaseline(const SensorSnapshot& snapshot) {
   if (!sessionBaseline.valid) return false;
 
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-    if (snapshot.statuses[i] != 0) return false;
+    bool currentValid = (snapshot.statuses[i] == 0 && snapshot.distances[i] <= DISTANCE_MAX_BEHAVIOR_MM);
+    bool baselineValid = sessionBaseline.distanceValid[i];
+
+    if (!baselineValid && currentValid) return false; // cannot compare without a baseline
+    if (!currentValid) continue; // ignore far/invalid readings entirely
+
     uint16_t baseVal = sessionBaseline.distances[i];
     uint16_t currentVal = snapshot.distances[i];
     if (abs((int)currentVal - (int)baseVal) > DISTANCE_BASELINE_TOLERANCE_MM) {
@@ -1229,6 +1248,10 @@ bool snapshotWithinBaseline(const SensorSnapshot& snapshot) {
 
 bool snapshotChangedSince(const SensorSnapshot& a, const SensorSnapshot& b) {
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+    bool aValid = (a.statuses[i] == 0 && a.distances[i] <= DISTANCE_MAX_BEHAVIOR_MM);
+    bool bValid = (b.statuses[i] == 0 && b.distances[i] <= DISTANCE_MAX_BEHAVIOR_MM);
+    if (!aValid && !bValid) continue;
+    if (aValid != bValid) return true;
     if (abs((int)a.distances[i] - (int)b.distances[i]) > DISTANCE_BASELINE_TOLERANCE_MM) {
       return true;
     }
