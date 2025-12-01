@@ -225,8 +225,8 @@ const float FOOD_MAX_SPEED_STEPS_S = 800.0f;   // top speed with torque-preservi
 const float FOOD_ACCEL_STEPS_S2    = 1200.0f;  // acceleration profile to prevent stalls
 
 // Fine-tune how far past the hall sensor the tunnel should travel to align with the opening
-// Start at 0 so alignment can be tuned precisely without automatic overshoot.
-const uint8_t ALIGNMENT_OVERSHOOT_STEPS = 0;
+// Extra microstepped nudge after the hall sensor triggers to finish alignment.
+const uint8_t ALIGNMENT_OVERSHOOT_STEPS = 10;
 // Additional steps to park the tunnel halfway between two sides (~23 degrees)
 const uint16_t TUNNEL_PARK_STEPS = (uint16_t)((STEPS_PER_REV * (long)MICROSTEPS * 45L) / 360L);
 
@@ -660,7 +660,8 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
       lastPosition = pos;
       if (digitalRead(hallPin) == LOW) {
         tunnelStepper.stop();
-        tunnelStepper.moveTo(tunnelStepper.currentPosition()); // halt immediately without alignment glide
+        long alignTarget = tunnelStepper.currentPosition() + (dirCW ? ALIGNMENT_OVERSHOOT_STEPS : -ALIGNMENT_OVERSHOOT_STEPS);
+        tunnelStepper.moveTo(alignTarget); // small nudge past the hall sensor for final alignment
         while (tunnelStepper.distanceToGo() != 0) {
           tunnelStepper.run();
         }
