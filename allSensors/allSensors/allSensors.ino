@@ -15,6 +15,7 @@ struct SensorSnapshot;
 #include <EEPROM.h>
 #include <SPI.h>
 #include <SD.h>
+#include <AccelStepper.h>
 
 // Flag to control whether the Uno R4 connection is expected/required
 bool expectUnoR4 = true;
@@ -218,6 +219,8 @@ const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 1L)
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 1500;   // high/low pulse width (slower for precise tunnel alignment)
 const unsigned int STEP_PULSE_FOOD_US = 1000; // high/low pulse width for food motor
+const float FOOD_MAX_SPEED_STEPS_S = 800.0f;   // top speed with torque-preserving ramping
+const float FOOD_ACCEL_STEPS_S2    = 1200.0f;  // acceleration profile to prevent stalls
 
 // Fine-tune how far past the hall sensor the tunnel should travel to align with the opening
 const uint8_t ALIGNMENT_OVERSHOOT_STEPS = 10;
@@ -258,6 +261,8 @@ uint8_t prevButtonState[BUTTON_COUNT]          = {HIGH, HIGH, HIGH, HIGH, HIGH, 
 volatile unsigned long buttonLastChange[BUTTON_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 volatile uint16_t buttonPendingMask = 0;
 volatile uint16_t buttonEventMask = 0;
+
+AccelStepper foodStepper(AccelStepper::DRIVER, STEP_PIN2, DIR_PIN2);
 
 enum ButtonPortGroup : uint8_t {
   BUTTON_PORT_F = 0,
@@ -623,21 +628,17 @@ void motorStep(int steps, bool dirCW) {
 }
 
 void motorStepFood(int steps, bool dirCW, bool disableAfter = true) {
-  digitalWrite(EN_PIN2, LOW); // enable driver
-  digitalWrite(DIR_PIN2, dirCW ? HIGH : LOW);
-  // delayMicroseconds(2); // DIR setup time
-  delay(2);
-  for (int i = 0; i < steps; i++) {
-    digitalWrite(STEP_PIN2, HIGH);
-    // delayMicroseconds(300);
-    delay(2);
-    digitalWrite(STEP_PIN2, LOW);
-    // delayMicroseconds(300);
-    delay(2);
+  foodStepper.enableOutputs();
+  foodStepper.setMaxSpeed(FOOD_MAX_SPEED_STEPS_S);
+  foodStepper.setAcceleration(FOOD_ACCEL_STEPS_S2);
+  foodStepper.setCurrentPosition(0);
+  foodStepper.moveTo(dirCW ? steps : -steps);
+  while (foodStepper.distanceToGo() != 0) {
+    foodStepper.run();
   }
 
   if (disableAfter) {
-    digitalWrite(EN_PIN2, HIGH); // disable driver to remove holding torque
+    foodStepper.disableOutputs();
   }
 }
 
@@ -1523,10 +1524,10 @@ void deliverRewardForSide(uint8_t side) {
   digitalWrite(EN_PIN, LOW);
 
   // motorStepFood(STEPS_DELOCK_FOOD, false, false);
-  motorStepFood(STEPS_45_FOOD*1, true);
-  motorStepFood(STEPS_45_FOOD/4, false);
-    motorStepFood(STEPS_45_FOOD*2, true);
-     motorStepFood(STEPS_45_FOOD/4, false);
+  motorStepFood(STEPS_45_FOOD*1, true, false);
+  motorStepFood(STEPS_45_FOOD/4, false, false);
+    motorStepFood(STEPS_45_FOOD*2, true, false);
+     motorStepFood(STEPS_45_FOOD/4, false, false);
   motorStepFood(STEPS_45_FOOD*4, true);
 
 
@@ -1865,6 +1866,12 @@ void setup() {
   digitalWrite(EN_PIN, HIGH); // disable driver at start
   pinMode(EN_PIN2, OUTPUT);
   digitalWrite(EN_PIN2, HIGH); // disable food driver at start
+
+  foodStepper.setEnablePin(EN_PIN2);
+  foodStepper.setPinsInverted(false, false, true); // enable is active LOW
+  foodStepper.setMaxSpeed(FOOD_MAX_SPEED_STEPS_S);
+  foodStepper.setAcceleration(FOOD_ACCEL_STEPS_S2);
+  foodStepper.disableOutputs();
 
   for (uint8_t i = 0; i < SIDE_COUNT; i++) {
     pinMode(sideHallPins[i], INPUT_PULLUP);
