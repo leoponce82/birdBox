@@ -223,6 +223,7 @@ const float TUNNEL_MAX_SPEED_STEPS_S = 220.0f;  // slower for precise hall align
 const float TUNNEL_ACCEL_STEPS_S2    = 400.0f;  // gentler ramp to reduce overshoot
 const float FOOD_MAX_SPEED_STEPS_S = 800.0f;   // top speed with torque-preserving ramping
 const float FOOD_ACCEL_STEPS_S2    = 1200.0f;  // acceleration profile to prevent stalls
+const unsigned long TUNNEL_VIBRATION_DURATION_MS = 1200; // brief shake to clear stuck pellets
 
 // Fine-tune how far past the hall sensor the tunnel should travel to align with the opening
 // Extra microstepped nudge after the hall sensor triggers to finish alignment.
@@ -634,6 +635,27 @@ void motorStepFood(int steps, bool dirCW, bool disableAfter = true) {
   if (disableAfter) {
     foodStepper.disableOutputs();
   }
+}
+
+void vibrateTunnel(unsigned long durationMs) {
+  const int amplitudeSteps = ALIGNMENT_OVERSHOOT_STEPS;
+  unsigned long start = millis();
+  bool dirCW = true;
+
+  tunnelStepper.enableOutputs();
+  tunnelStepper.setCurrentPosition(0);
+
+  while (millis() - start < durationMs) {
+    long target = dirCW ? amplitudeSteps : -amplitudeSteps;
+    tunnelStepper.moveTo(target);
+    while (tunnelStepper.distanceToGo() != 0 && millis() - start < durationMs) {
+      tunnelStepper.run();
+    }
+    dirCW = !dirCW;
+  }
+
+  tunnelStepper.stop();
+  tunnelStepper.setCurrentPosition(0);
 }
 
 bool isSideAligned(uint8_t side) {
@@ -1532,8 +1554,9 @@ void deliverRewardForSide(uint8_t side) {
      motorStepFood(STEPS_45_FOOD/4, false, false);
   motorStepFood(STEPS_45_FOOD*4, true);
 
+  vibrateTunnel(TUNNEL_VIBRATION_DURATION_MS);
 
-  delay(1000); // keep tunnel motor torqued during and briefly after food delivery
+  delay(200); // brief hold after vibration while keeping tunnel motor torqued
   digitalWrite(EN_PIN, HIGH); // turn off tunnel motor after feeding completes
 
   lastMoveMs = millis();
