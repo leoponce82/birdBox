@@ -1523,8 +1523,10 @@ void deliverRewardForSide(uint8_t side) {
   digitalWrite(EN_PIN, LOW);
 
   // motorStepFood(STEPS_DELOCK_FOOD, false, false);
-  motorStepFood(STEPS_45_FOOD*3, true);
-  motorStepFood(STEPS_45_FOOD/3, false);
+  motorStepFood(STEPS_45_FOOD*1, true);
+  motorStepFood(STEPS_45_FOOD/4, false);
+    motorStepFood(STEPS_45_FOOD*2, true);
+     motorStepFood(STEPS_45_FOOD/4, false);
   motorStepFood(STEPS_45_FOOD*4, true);
 
 
