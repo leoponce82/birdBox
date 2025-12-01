@@ -219,6 +219,8 @@ const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 1L)
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 1500;   // high/low pulse width (slower for precise tunnel alignment)
 const unsigned int STEP_PULSE_FOOD_US = 1000; // high/low pulse width for food motor
+const float TUNNEL_MAX_SPEED_STEPS_S = 450.0f;  // top speed while keeping torque
+const float TUNNEL_ACCEL_STEPS_S2    = 800.0f;  // acceleration profile to prevent stalls
 const float FOOD_MAX_SPEED_STEPS_S = 800.0f;   // top speed with torque-preserving ramping
 const float FOOD_ACCEL_STEPS_S2    = 1200.0f;  // acceleration profile to prevent stalls
 
@@ -263,6 +265,7 @@ volatile uint16_t buttonPendingMask = 0;
 volatile uint16_t buttonEventMask = 0;
 
 AccelStepper foodStepper(AccelStepper::DRIVER, STEP_PIN2, DIR_PIN2);
+AccelStepper tunnelStepper(AccelStepper::DRIVER, STEP_PIN, DIR_PIN);
 
 enum ButtonPortGroup : uint8_t {
   BUTTON_PORT_F = 0,
@@ -611,20 +614,10 @@ void oledPrintf(uint8_t x, uint8_t y, const __FlashStringHelper* label, int valu
 }
 
 void motorStep(int steps, bool dirCW) {
-  digitalWrite(EN_PIN, LOW); // enable driver
-  digitalWrite(DIR_PIN, dirCW ? HIGH : LOW);
-  // delayMicroseconds(2); // DIR setup time
-  delay(2);
-  for (int i = 0; i < steps; i++) {
-    digitalWrite(STEP_PIN, HIGH);
-    // delayMicroseconds(STEP_PULSE_US);
-    delay(2);
-    digitalWrite(STEP_PIN, LOW);
-    // delayMicroseconds(STEP_PULSE_US);
-    delay(2);
-  }
-  // delayMicroseconds(1000000);
-  // digitalWrite(EN_PIN, HIGH); // disable driver to remove holding torque
+  tunnelStepper.enableOutputs();
+  tunnelStepper.setCurrentPosition(0);
+  tunnelStepper.moveTo(dirCW ? steps : -steps);
+  tunnelStepper.runToPosition();
 }
 
 void motorStepFood(int steps, bool dirCW, bool disableAfter = true) {
@@ -655,21 +648,21 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
 
   bool aligned = false;
   unsigned long stepsTaken = 0;
-  digitalWrite(EN_PIN, LOW);
-  digitalWrite(DIR_PIN, dirCW ? HIGH : LOW);
-  // delayMicroseconds(2);
-  delay(2);
-  for (unsigned long step = 0; step < maxSteps; step++) {
-    digitalWrite(STEP_PIN, HIGH);
-    // delayMicroseconds(STEP_PULSE_US);
-    delay(2);
-    digitalWrite(STEP_PIN, LOW);
-    // delayMicroseconds(STEP_PULSE_US);
-    delay(2);
-    stepsTaken++;
-    if (digitalRead(hallPin) == LOW) {
-      aligned = true;
-      break;
+  tunnelStepper.enableOutputs();
+  tunnelStepper.setCurrentPosition(0);
+  tunnelStepper.moveTo(dirCW ? (long)maxSteps : -(long)maxSteps);
+
+  long lastPosition = tunnelStepper.currentPosition();
+  while (tunnelStepper.distanceToGo() != 0) {
+    tunnelStepper.run();
+    long pos = tunnelStepper.currentPosition();
+    if (pos != lastPosition) {
+      lastPosition = pos;
+      stepsTaken = (unsigned long)abs(pos);
+      if (digitalRead(hallPin) == LOW) {
+        aligned = true;
+        break;
+      }
     }
   }
 
@@ -679,17 +672,12 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
     if (overshootSteps > remainingBudget) {
       overshootSteps = remainingBudget;
     }
-    for (unsigned long i = 0; i < overshootSteps; i++) {
-      digitalWrite(STEP_PIN, HIGH);
-      // delayMicroseconds(STEP_PULSE_US);
-      delay(2);
-      digitalWrite(STEP_PIN, LOW);
-      // delayMicroseconds(STEP_PULSE_US);
-      delay(2);
+    if (overshootSteps > 0) {
+      tunnelStepper.move(dirCW ? (long)overshootSteps : -(long)overshootSteps);
+      tunnelStepper.runToPosition();
     }
   }
 
-  // digitalWrite(EN_PIN, HIGH);
   return aligned || digitalRead(hallPin) == LOW;
 }
 
@@ -1866,6 +1854,12 @@ void setup() {
   digitalWrite(EN_PIN, HIGH); // disable driver at start
   pinMode(EN_PIN2, OUTPUT);
   digitalWrite(EN_PIN2, HIGH); // disable food driver at start
+
+  tunnelStepper.setEnablePin(EN_PIN);
+  tunnelStepper.setPinsInverted(false, false, true); // enable is active LOW
+  tunnelStepper.setMaxSpeed(TUNNEL_MAX_SPEED_STEPS_S);
+  tunnelStepper.setAcceleration(TUNNEL_ACCEL_STEPS_S2);
+  tunnelStepper.disableOutputs();
 
   foodStepper.setEnablePin(EN_PIN2);
   foodStepper.setPinsInverted(false, false, true); // enable is active LOW
