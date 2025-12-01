@@ -219,13 +219,14 @@ const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 1L)
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 1500;   // high/low pulse width (slower for precise tunnel alignment)
 const unsigned int STEP_PULSE_FOOD_US = 1000; // high/low pulse width for food motor
-const float TUNNEL_MAX_SPEED_STEPS_S = 450.0f;  // top speed while keeping torque
-const float TUNNEL_ACCEL_STEPS_S2    = 800.0f;  // acceleration profile to prevent stalls
+const float TUNNEL_MAX_SPEED_STEPS_S = 220.0f;  // slower for precise hall alignment
+const float TUNNEL_ACCEL_STEPS_S2    = 400.0f;  // gentler ramp to reduce overshoot
 const float FOOD_MAX_SPEED_STEPS_S = 800.0f;   // top speed with torque-preserving ramping
 const float FOOD_ACCEL_STEPS_S2    = 1200.0f;  // acceleration profile to prevent stalls
 
 // Fine-tune how far past the hall sensor the tunnel should travel to align with the opening
-const uint8_t ALIGNMENT_OVERSHOOT_STEPS = 10;
+// Start at 0 so alignment can be tuned precisely without automatic overshoot.
+const uint8_t ALIGNMENT_OVERSHOOT_STEPS = 0;
 // Additional steps to park the tunnel halfway between two sides (~23 degrees)
 const uint16_t TUNNEL_PARK_STEPS = (uint16_t)((STEPS_PER_REV * (long)MICROSTEPS * 45L) / 360L);
 
@@ -647,7 +648,6 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
   }
 
   bool aligned = false;
-  unsigned long stepsTaken = 0;
   tunnelStepper.enableOutputs();
   tunnelStepper.setCurrentPosition(0);
   tunnelStepper.moveTo(dirCW ? (long)maxSteps : -(long)maxSteps);
@@ -658,23 +658,16 @@ bool stepMotorUntilAligned(uint8_t hallPin, bool dirCW, unsigned long maxSteps) 
     long pos = tunnelStepper.currentPosition();
     if (pos != lastPosition) {
       lastPosition = pos;
-      stepsTaken = (unsigned long)abs(pos);
       if (digitalRead(hallPin) == LOW) {
+        tunnelStepper.stop();
+        tunnelStepper.moveTo(tunnelStepper.currentPosition()); // halt immediately without alignment glide
+        while (tunnelStepper.distanceToGo() != 0) {
+          tunnelStepper.run();
+        }
+        tunnelStepper.disableOutputs();
         aligned = true;
         break;
       }
-    }
-  }
-
-  if (aligned) {
-    unsigned long remainingBudget = (stepsTaken >= maxSteps) ? 0 : (maxSteps - stepsTaken);
-    unsigned long overshootSteps = ALIGNMENT_OVERSHOOT_STEPS;
-    if (overshootSteps > remainingBudget) {
-      overshootSteps = remainingBudget;
-    }
-    if (overshootSteps > 0) {
-      tunnelStepper.move(dirCW ? (long)overshootSteps : -(long)overshootSteps);
-      tunnelStepper.runToPosition();
     }
   }
 
@@ -1289,6 +1282,20 @@ void showStateBanner(const __FlashStringHelper* stateText) {
   display.setTextSize(2);
   display.setCursor(0, 16);
   display.println(stateText);
+  display.setTextSize(1);
+  display.setCursor(0, 48);
+  display.print(F("Hall:"));
+  bool anyHall = false;
+  for (uint8_t i = 0; i < SIDE_COUNT; i++) {
+    if (digitalRead(sideHallPins[i]) == LOW) {
+      display.print(' ');
+      display.print(i + 1);
+      anyHall = true;
+    }
+  }
+  if (!anyHall) {
+    display.print(F(" none"));
+  }
   display.display();
 }
 
@@ -1302,17 +1309,23 @@ void displayFastSnapshot(const SensorSnapshot& snapshot) {
   display.setTextSize(1);
   display.setCursor(0, 10);
   display.print(F("State: FAST"));
-
-  for (uint8_t i = 0; i < SENSOR_COUNT; i += 2) {
-    uint8_t y = 20 + (i / 2) * 8;
-    display.setCursor(0, y);
-    display.print(F("S")); display.print(i + 1); display.print(F(":"));
-    if (snapshot.statuses[i] == 0) display.print(snapshot.distances[i]);
-    else display.print(F("--"));
-    display.setCursor(64, y);
-    display.print(F("S")); display.print(i + 2); display.print(F(":"));
-    if (snapshot.statuses[i + 1] == 0) display.print(snapshot.distances[i + 1]);
-    else display.print(F("--"));
+  display.setCursor(0, 26);
+  display.print(F("Hall sensors:"));
+  bool anyHall = false;
+  uint8_t y = 36;
+  for (uint8_t i = 0; i < SIDE_COUNT; i++) {
+    if (digitalRead(sideHallPins[i]) == LOW) {
+      display.setCursor(0, y);
+      display.print(F("Side "));
+      display.print(i + 1);
+      display.print(F(" active"));
+      y += 10;
+      anyHall = true;
+    }
+  }
+  if (!anyHall) {
+    display.setCursor(0, 36);
+    display.print(F("No hall active"));
   }
 
   display.display();
