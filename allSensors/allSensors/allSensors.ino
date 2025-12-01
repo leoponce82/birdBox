@@ -1519,6 +1519,9 @@ void deliverRewardForSide(uint8_t side) {
     return;
   }
 
+  // Keep the tunnel motor energized during food delivery so the tunnel doesn't relax mid-feed
+  digitalWrite(EN_PIN, LOW);
+
   // motorStepFood(STEPS_DELOCK_FOOD, false, false);
   motorStepFood(STEPS_45_FOOD*3, true);
   motorStepFood(STEPS_45_FOOD/3, false);
