@@ -212,7 +212,7 @@ void setSensorIntervalMs(unsigned long intervalMs) {
 #define STEPS_PER_REV      200     // 1.8° motor
 #define STEPS_PER_REV_FOOD  200     // gear motor for food dispenser
 const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;       // quarter turn main motor
-const int STEPS_45_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 2;  // 180 degrees turn food motor
+const int STEPS_45_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 8;  // 360 degrees turn food motor
 const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 1L) / 360L); // ~20° back-off
 
 // pulse timing (adjust for your driver/motor)
@@ -629,11 +629,11 @@ void motorStepFood(int steps, bool dirCW, bool disableAfter = true) {
   delay(2);
   for (int i = 0; i < steps; i++) {
     digitalWrite(STEP_PIN2, HIGH);
-    delayMicroseconds(300);
-    // delay(0.3);
+    // delayMicroseconds(300);
+    delay(2);
     digitalWrite(STEP_PIN2, LOW);
-    delayMicroseconds(300);
-    // delay(1);
+    // delayMicroseconds(300);
+    delay(2);
   }
 
   if (disableAfter) {
@@ -1520,7 +1520,9 @@ void deliverRewardForSide(uint8_t side) {
   }
 
   // motorStepFood(STEPS_DELOCK_FOOD, false, false);
-  motorStepFood(STEPS_45_FOOD, true);
+  motorStepFood(STEPS_45_FOOD*3, true);
+  motorStepFood(STEPS_45_FOOD/3, false);
+  motorStepFood(STEPS_45_FOOD*4, true);
 
 
   delay(1000); // keep tunnel motor torqued during and briefly after food delivery
