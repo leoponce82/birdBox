@@ -1940,7 +1940,7 @@ void setup() {
   display.setCursor(0,0);
   display.println(F("Hello bird..."));
   display.display();
-  delay(1000);
+  delay(3000);
 
   // RTC
   RTC_SELECT();
@@ -1951,11 +1951,12 @@ void setup() {
   ahtReady = aht20.begin();
   tcaSelect(SCREEN_CHANNEL);
   display.clearDisplay();
+  display.setTextSize(1);
   display.setCursor(0,0);
   display.print(F("AHT20: "));
   display.println(ahtReady ? F("OK") : F("FAIL"));
   display.display();
-  delay(400);
+  delay(500);
 
   RTC_SELECT();
   accelReady = accel.begin();
@@ -1976,7 +1977,7 @@ void setup() {
   display.print(F("LSM303: "));
   display.println(accelReady ? F("OK") : F("FAIL"));
   display.display();
-  delay(400);
+  delay(500);
 
   // SD card (SPI)
   pinMode(SD_CHIP_SELECT_PIN, OUTPUT);
@@ -1987,7 +1988,7 @@ void setup() {
     display.setCursor(0,0);
     display.println(F("SD card OK"));
     display.display();
-    delay(400);
+    delay(500);
   } else {
     sdAvailable = false;
     tcaSelect(SCREEN_CHANNEL);
@@ -1995,7 +1996,7 @@ void setup() {
     display.setCursor(0,0);
     display.println(F("SD init FAIL"));
     display.display();
-    delay(800);
+    delay(1000);
   }
 
   // Put all sensors on all channels into reset first
@@ -2015,9 +2016,9 @@ void setup() {
     tcaSelect(SCREEN_CHANNEL);
     display.clearDisplay();
     display.setCursor(0,0);
-    display.print(F("CH ")); display.print(ch); display.println(ok ? F(": OK") : F(": FAIL"));
+    display.print(F("CH ")); display.print(ch+1); display.println(ok ? F(": OK") : F(": FAIL"));
     display.display();
-    delay(400);
+    delay(500);
   }
   
 
@@ -2040,7 +2041,7 @@ void setup() {
     display.println(F("SKIP"));
   }
   display.display();
-  delay(1000);
+  delay(500);
   
   // Ready banner
   tcaSelect(SCREEN_CHANNEL);
