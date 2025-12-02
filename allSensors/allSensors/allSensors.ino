@@ -1554,9 +1554,10 @@ void deliverRewardForSide(uint8_t side) {
      motorStepFood(STEPS_45_FOOD/4, false, false);
   motorStepFood(STEPS_45_FOOD*4, true);
 
-  vibrateTunnel(TUNNEL_VIBRATION_DURATION_MS);
+  // vibrateTunnel(TUNNEL_VIBRATION_DURATION_MS);
+  // delay(200); // brief hold after vibration while keeping tunnel motor torqued
+  delay(2000); // keep tunnel motor torqued during and briefly after food delivery
 
-  delay(200); // brief hold after vibration while keeping tunnel motor torqued
   digitalWrite(EN_PIN, HIGH); // turn off tunnel motor after feeding completes
 
   lastMoveMs = millis();
