@@ -37,6 +37,7 @@ volatile uint16_t sensorUpdateTickCounter = 0;
 #define CHARGER_DETECT_PIN 27   // input, HIGH when charger jack is inserted (floating jack, pulled up when present)
 #define SWITCH_DETECT_PIN  25   // input, reads LOW when main switch is ON
 #define GATE_5V_PIN        23   // output, goes HIGH after boot
+#define BUZZER_PIN         22   // output, piezo buzzer to ground (active/passive unknown)
 #define BATTERY_PIN        A0   // input, battery voltage via divider (R1=100k, R2=47k)
 
 const float BATTERY_R1_OHMS   = 100000.0f;
@@ -47,6 +48,12 @@ const float BATTERY_MAX_V     =     12.6f;
 const float ADC_REF_V         =      4.028f;
 const uint8_t ADC_RESOLUTION  =       10;   // enforce 10-bit reads for predictable scaling
 const float ADC_MAX_READING   = (1 << ADC_RESOLUTION) - 1;
+
+// Buzzer tone test helpers (set BUZZER_USE_TONE to false if the buzzer prefers a direct drive)
+const bool BUZZER_USE_TONE = true;
+const uint16_t BUZZER_TEST_FREQ_HZ = 2000;
+const uint16_t BUZZER_TONE_DURATION_MS = 150;
+const uint16_t BUZZER_PULSE_DURATION_MS = 120;
 
 static unsigned long lastOledFrame = 0;
 
@@ -173,6 +180,20 @@ SensorSnapshot lastSnapshot;
 float peckNoiseBaseline = 0.0f;
 char lastButtonEvent[16] = "";
 bool buttonEventPending = false;
+
+// Simple buzzer helpers so we can try tone() first and fall back to a direct drive if needed.
+// Set BUZZER_USE_TONE to false near the pin definitions to switch to the direct pulse.
+void buzzTest(uint16_t freqHz = BUZZER_TEST_FREQ_HZ, uint16_t durationMs = BUZZER_TONE_DURATION_MS) {
+  if (BUZZER_USE_TONE) {
+    tone(BUZZER_PIN, freqHz, durationMs);
+    delay(durationMs);
+    noTone(BUZZER_PIN);
+  } else {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(BUZZER_PULSE_DURATION_MS);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+}
 
 // --- power switch debounce state ---
 const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 200;
@@ -2133,8 +2154,10 @@ void setup() {
   // Power/Control pins
   pinMode(POWER_HOLD_PIN, OUTPUT);
   pinMode(GATE_5V_PIN,   OUTPUT);
+  pinMode(BUZZER_PIN,    OUTPUT);
   digitalWrite(POWER_HOLD_PIN, HIGH);   // hold power after boot
   digitalWrite(GATE_5V_PIN,   HIGH);    // enable 5V rail for peripherals
+  digitalWrite(BUZZER_PIN,    LOW);     // idle buzzer
 
   pinMode(BATTERY_PIN, INPUT);
 #if defined(analogReadResolution)
@@ -2208,6 +2231,7 @@ void setup() {
   display.setCursor(0,0);
   display.println(F("Hello bird..."));
   display.display();
+  buzzTest(); // try tone() first; flip BUZZER_USE_TONE to false if it's an active buzzer
   delay(3000);
 
   // RTC
