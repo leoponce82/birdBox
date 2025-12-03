@@ -54,6 +54,12 @@ const bool BUZZER_USE_TONE = true;
 const uint16_t BUZZER_TEST_FREQ_HZ = 2000;
 const uint16_t BUZZER_TONE_DURATION_MS = 150;
 const uint16_t BUZZER_PULSE_DURATION_MS = 120;
+const uint16_t BUZZER_REWARD_FREQ_HZ = 432;
+const uint16_t BUZZER_REWARD_DURATION_MS = 500;
+const uint16_t BUZZER_MELODY_FREQ_HIGH_HZ = 660;
+const uint16_t BUZZER_MELODY_FREQ_LOW_HZ = 605;
+const uint16_t BUZZER_MELODY_STROKE_MS = 300;
+const uint16_t BUZZER_MELODY_PAUSE_MS = 60;
 
 static unsigned long lastOledFrame = 0;
 
@@ -191,6 +197,37 @@ void buzzTest(uint16_t freqHz = BUZZER_TEST_FREQ_HZ, uint16_t durationMs = BUZZE
   } else {
     digitalWrite(BUZZER_PIN, HIGH);
     delay(BUZZER_PULSE_DURATION_MS);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+}
+
+void playStartupMelody() {
+  if (BUZZER_USE_TONE) {
+    tone(BUZZER_PIN, BUZZER_MELODY_FREQ_HIGH_HZ, BUZZER_MELODY_STROKE_MS);
+    delay(BUZZER_MELODY_STROKE_MS);
+    noTone(BUZZER_PIN);
+
+    delay(BUZZER_MELODY_PAUSE_MS);
+
+    tone(BUZZER_PIN, BUZZER_MELODY_FREQ_HIGH_HZ, BUZZER_MELODY_STROKE_MS / 2);
+    delay(BUZZER_MELODY_STROKE_MS / 2);
+
+    tone(BUZZER_PIN, BUZZER_MELODY_FREQ_LOW_HZ, BUZZER_MELODY_STROKE_MS / 2);
+    delay(BUZZER_MELODY_STROKE_MS / 2);
+    noTone(BUZZER_PIN);
+  } else {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(BUZZER_MELODY_STROKE_MS);
+    digitalWrite(BUZZER_PIN, LOW);
+
+    delay(BUZZER_MELODY_PAUSE_MS);
+
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(BUZZER_MELODY_STROKE_MS / 2);
+    digitalWrite(BUZZER_PIN, LOW);
+
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(BUZZER_MELODY_STROKE_MS / 2);
     digitalWrite(BUZZER_PIN, LOW);
   }
 }
@@ -1772,6 +1809,7 @@ void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now
 
   if (sequenceProgress[idx] >= expectedLength) {
     if (now - lastMoveMs > moveCooldownMs) {
+      buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
       deliverRewardForSide(panel);
     }
     sequenceProgress[idx] = 0;
@@ -2231,7 +2269,7 @@ void setup() {
   display.setCursor(0,0);
   display.println(F("Hello bird..."));
   display.display();
-  buzzTest(); // try tone() first; flip BUZZER_USE_TONE to false if it's an active buzzer
+  playStartupMelody();
   delay(3000);
 
   // RTC
