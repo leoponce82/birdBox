@@ -56,7 +56,7 @@ const uint16_t BUZZER_TONE_DURATION_MS = 150;
 const uint16_t BUZZER_PULSE_DURATION_MS = 120;
 const uint16_t BUZZER_REWARD_FREQ_HZ = 432;
 const uint16_t BUZZER_REWARD_DURATION_MS = 500;
-const uint16_t BUZZER_MELODY_FREQ_HIGH_HZ = 660;
+const uint16_t BUZZER_MELODY_FREQ_HIGH_HZ = 670;
 const uint16_t BUZZER_MELODY_FREQ_LOW_HZ = 605;
 const uint16_t BUZZER_MELODY_STROKE_MS = 300;
 const uint16_t BUZZER_MELODY_PAUSE_MS = 60;
@@ -202,6 +202,36 @@ void buzzTest(uint16_t freqHz = BUZZER_TEST_FREQ_HZ, uint16_t durationMs = BUZZE
 }
 
 void playStartupMelody() {
+  if (BUZZER_USE_TONE) {
+    tone(BUZZER_PIN, BUZZER_MELODY_FREQ_LOW_HZ, BUZZER_MELODY_STROKE_MS);
+    delay(BUZZER_MELODY_STROKE_MS);
+    noTone(BUZZER_PIN);
+
+    delay(BUZZER_MELODY_PAUSE_MS);
+
+    tone(BUZZER_PIN, BUZZER_MELODY_FREQ_LOW_HZ, BUZZER_MELODY_STROKE_MS / 2);
+    delay(BUZZER_MELODY_STROKE_MS / 2);
+
+    tone(BUZZER_PIN, BUZZER_MELODY_FREQ_HIGH_HZ, BUZZER_MELODY_STROKE_MS / 2);
+    delay(BUZZER_MELODY_STROKE_MS / 2);
+    noTone(BUZZER_PIN);
+  } else {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(BUZZER_MELODY_STROKE_MS);
+    digitalWrite(BUZZER_PIN, LOW);
+
+    delay(BUZZER_MELODY_PAUSE_MS);
+
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(BUZZER_MELODY_STROKE_MS / 2);
+    digitalWrite(BUZZER_PIN, LOW);
+
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(BUZZER_MELODY_STROKE_MS / 2);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+}
+void playShutdownMelody() {
   if (BUZZER_USE_TONE) {
     tone(BUZZER_PIN, BUZZER_MELODY_FREQ_HIGH_HZ, BUZZER_MELODY_STROKE_MS);
     delay(BUZZER_MELODY_STROKE_MS);
@@ -498,6 +528,7 @@ void saveSequencesToEEPROM() {
   data.checksum = data.computeChecksum();
 
   EEPROM.put(SEQUENCE_STORAGE_ADDR, data);
+  buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
 }
 
 void loadSequencesFromEEPROM() {
@@ -1847,6 +1878,7 @@ void handleMenuActivationHold(unsigned long now) {
   }
 }
 void showMenuMain() {
+  buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
   OLED_SELECT();
   display.clearDisplay();
   drawStatusHeader(millis());
@@ -2157,6 +2189,7 @@ void shutdownSequence(){
   drawSleepingBird(32, 0);
   display.display();
   delay(1200); // show it briefly
+  playShutdownMelody();
 
   // 2) Quiet sensors (optional)
   for (uint8_t ch=0; ch<SENSOR_CHANNELS; ch++) resetChannelGroup(ch);
