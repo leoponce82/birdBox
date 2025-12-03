@@ -60,6 +60,8 @@ const uint16_t BUZZER_MELODY_FREQ_HIGH_HZ = 670;
 const uint16_t BUZZER_MELODY_FREQ_LOW_HZ = 605;
 const uint16_t BUZZER_MELODY_STROKE_MS = 300;
 const uint16_t BUZZER_MELODY_PAUSE_MS = 60;
+const uint16_t BATTERY_WARNING_BEEP_MS = 140;
+const uint16_t BATTERY_WARNING_GAP_MS = 120;
 
 static unsigned long lastOledFrame = 0;
 
@@ -259,6 +261,60 @@ void playShutdownMelody() {
     digitalWrite(BUZZER_PIN, HIGH);
     delay(BUZZER_MELODY_STROKE_MS / 2);
     digitalWrite(BUZZER_PIN, LOW);
+  }
+}
+
+void playBatteryTriplet(uint16_t freqHz) {
+  for (uint8_t i = 0; i < 3; i++) {
+    if (BUZZER_USE_TONE) {
+      tone(BUZZER_PIN, freqHz, BATTERY_WARNING_BEEP_MS);
+      delay(BATTERY_WARNING_BEEP_MS);
+      noTone(BUZZER_PIN);
+    } else {
+      digitalWrite(BUZZER_PIN, HIGH);
+      delay(BATTERY_WARNING_BEEP_MS);
+      digitalWrite(BUZZER_PIN, LOW);
+    }
+    delay(BATTERY_WARNING_GAP_MS);
+  }
+}
+
+void drawFlashingBatteryIcon(int percent, bool filled) {
+  const uint8_t iconW = 24;
+  const uint8_t iconH = 12;
+  const uint8_t iconX = 0;
+  const uint8_t iconY = 0;
+
+  display.drawRect(iconX, iconY, iconW, iconH, SSD1306_WHITE);
+  display.fillRect(iconX + iconW, iconY + 3, 2, iconH - 6, SSD1306_WHITE);
+
+  if (filled) {
+    int cappedPercent = constrain(percent, 0, 100);
+    const uint8_t fillMaxW = iconW - 4;
+    uint8_t fillW = (uint8_t)(fillMaxW * cappedPercent / 100.0f);
+    if (fillW > 0) {
+      display.fillRect(iconX + 2, iconY + 2, fillW, iconH - 4, SSD1306_WHITE);
+    }
+  }
+}
+
+void showBatteryWarningScreen(int percent, const __FlashStringHelper* line1, const __FlashStringHelper* line2, uint16_t beepFreqHz) {
+  for (uint8_t cycle = 0; cycle < 2; cycle++) {
+    OLED_SELECT();
+    display.clearDisplay();
+    bool fillIcon = (cycle % 2 == 0);
+    drawFlashingBatteryIcon(percent, fillIcon);
+
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(2);
+    display.setCursor(6, 16);
+    display.println(line1);
+    display.setCursor(6, 40);
+    display.println(line2);
+    display.display();
+
+    playBatteryTriplet(beepFreqHz);
+    delay(240);
   }
 }
 
@@ -1191,6 +1247,11 @@ float readBatteryVoltage() {
   return sensedVoltage * dividerScale;
 }
 
+int readBatteryPercent() {
+  float voltage = readBatteryVoltage();
+  return batteryPercentFromVoltage(voltage);
+}
+
 int batteryPercentFromVoltage(float voltage) {
   float pct = ((voltage - BATTERY_MIN_V) * 100.0f) / (BATTERY_MAX_V - BATTERY_MIN_V);
   if (pct < 0.0f) pct = 0.0f;
@@ -1205,6 +1266,44 @@ bool isChargerConnected() {
 bool shouldShowBatteryIndicator(int percent, unsigned long nowMs) {
   if (percent > 20) return true;
   return ((nowMs / 1000) % 2) == 0;
+}
+
+void showStartupBatteryWarnings() {
+  int percent = readBatteryPercent();
+
+  if (percent <= 5) {
+    showBatteryWarningScreen(percent, F("I'm too tired!"), F("Charge me"), 2000);
+    shutdownInitiated = true;
+    shutdownSequence();
+    return;
+  }
+
+  if (percent <= 10) {
+    showBatteryWarningScreen(percent, F("Please"), F("charge me"), 3000);
+    return;
+  }
+
+  if (percent <= 20) {
+    showBatteryWarningScreen(percent, F("Low batt"), F("Charge me"), 2000);
+  }
+}
+
+void showShutdownBatteryWarnings() {
+  int percent = readBatteryPercent();
+
+  if (percent <= 5) {
+    showBatteryWarningScreen(percent, F("I'm too tired!"), F("Charge me"), 2000);
+    return;
+  }
+
+  if (percent <= 10) {
+    showBatteryWarningScreen(percent, F("Please"), F("charge me"), 3000);
+    return;
+  }
+
+  if (percent <= 20) {
+    showBatteryWarningScreen(percent, F("Low batt"), F("Charge soon"), 2000);
+  }
 }
 
 void drawBatteryStatus(unsigned long nowMs) {
@@ -2235,6 +2334,8 @@ void drawSleepingBird(int x,int y){
 }
 
 void shutdownSequence(){
+  showShutdownBatteryWarnings();
+
   // 1) Say good night
   OLED_SELECT();
   display.clearDisplay();
@@ -2364,6 +2465,8 @@ void setup() {
   display.display();
   playStartupMelody();
   delay(3000);
+
+  showStartupBatteryWarnings();
 
   // RTC
   RTC_SELECT();
