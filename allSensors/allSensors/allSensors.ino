@@ -1712,7 +1712,7 @@ void showMenuConfirm() {
   display.setCursor(0, 50);
   display.println(F("1=Save 2=Again"));
   display.setCursor(0, 58);
-  display.println(F("3=Menu 4=Opt"));
+  display.println(F("3=Menu 4=Back"));
   display.display();
 }
 
