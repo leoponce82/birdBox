@@ -424,6 +424,7 @@ struct SequenceStorage;
 const uint8_t SIDE_COUNT = 4;
 const uint8_t MAX_SEQUENCE_LENGTH = 8;
 const uint8_t DEFAULT_SEQUENCE_LENGTH = 4;
+const uint8_t MIN_SEQUENCE_LENGTH = 1;
 const unsigned long SEQUENCE_TIMEOUT_MS = 5000;
 
 uint8_t storedSequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
@@ -652,9 +653,10 @@ enum SystemMode {
   MODE_IDLE,
   MODE_MENU_MAIN,           // <--- NEW: Top Level
   MODE_MENU_SELECT_SIDE,    // (Submenu 1)
+  MODE_MENU_SELECT_LENGTH,
   MODE_MENU_DISPLAY_SELECT, // (Submenu 2)
   MODE_MENU_OPTIONS,        // (Submenu 3)
-  MODE_MENU_ENTER_SEQUENCE, 
+  MODE_MENU_ENTER_SEQUENCE,
   MODE_MENU_CONFIRM,
   MODE_MENU_RESET_CONFIRM
 };
@@ -676,6 +678,7 @@ bool menuAwaitingRelease = false;
 uint8_t menuSelectedSide = 0;
 uint8_t menuSequenceBuffer[MAX_SEQUENCE_LENGTH];
 uint8_t menuSequenceLength = 0;
+uint8_t menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
 
 const uint8_t panel1Indices[4] = {12, 13, 14, 15};
 
@@ -1656,6 +1659,25 @@ void showMenuSelectSide() {
   display.display();
 }
 
+void showMenuSelectLength() {
+  OLED_SELECT();
+  display.clearDisplay();
+  unsigned long now = millis();
+  drawStatusHeader(now);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 10);
+  display.print(F("Side "));
+  display.print(menuSelectedSide);
+  display.println(F(" length"));
+  display.print(F("Len: "));
+  display.println(menuSequenceTargetLength);
+  display.println(F("1=- 2=+"));
+  display.println(F("3=Select"));
+  display.println(F("4=Back"));
+  display.display();
+}
+
 void showMenuEnterSequence() {
   OLED_SELECT();
   display.clearDisplay();
@@ -1667,17 +1689,19 @@ void showMenuEnterSequence() {
   display.print(F("Side "));
   display.print(menuSelectedSide);
   display.println(F(" sequence"));
-  display.println(F("Enter 4 buttons"));
+  display.print(F("Enter "));
+  display.print(menuSequenceTargetLength);
+  display.println(F(" buttons"));
 
   display.setTextSize(2);
   display.setCursor(0, 34);
-  for (uint8_t i = 0; i < DEFAULT_SEQUENCE_LENGTH; i++) {
+  for (uint8_t i = 0; i < menuSequenceTargetLength; i++) {
     if (i < menuSequenceLength) {
       display.print(menuSequenceBuffer[i]);
     } else {
       display.print('_');
     }
-    if (i < DEFAULT_SEQUENCE_LENGTH - 1) display.print(' ');
+    if (i < menuSequenceTargetLength - 1) display.print(' ');
   }
 
   display.setTextSize(1);
@@ -1685,7 +1709,7 @@ void showMenuEnterSequence() {
   display.print(F("Step "));
   display.print(menuSequenceLength);
   display.print(F("/"));
-  display.print(DEFAULT_SEQUENCE_LENGTH);
+  display.print(menuSequenceTargetLength);
   display.display();
 }
 
@@ -1703,9 +1727,9 @@ void showMenuConfirm() {
 
   display.setTextSize(2);
   display.setCursor(0, 34);
-  for (uint8_t i = 0; i < menuSequenceLength; i++) {
+  for (uint8_t i = 0; i < menuSequenceTargetLength; i++) {
     display.print(menuSequenceBuffer[i]);
-    if (i < menuSequenceLength - 1) display.print(' ');
+    if (i < menuSequenceTargetLength - 1) display.print(' ');
   }
 
   display.setTextSize(1);
@@ -1744,6 +1768,7 @@ void enterMenu() {
   currentMode = MODE_MENU_MAIN; // Changed from MODE_MENU_SELECT_SIDE
   menuAwaitingRelease = true;
   menuSelectedSide = 0;
+  menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
   resetMenuSequenceBuffer();
   panel1MenuHoldActive = false;
   menuHoldStart = 0;
@@ -1758,6 +1783,7 @@ void exitMenu() {
   menuSelectedSide = 0;
   panel1MenuHoldActive = false;
   menuHoldStart = 0;
+  menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
   resetMenuSequenceBuffer();
 }
 
@@ -1774,11 +1800,15 @@ void resetToFactoryDefaults() {
 void saveMenuSequence() {
   if (menuSelectedSide < 1 || menuSelectedSide > SIDE_COUNT) return;
   uint8_t idx = menuSelectedSide - 1;
-  storedSequenceLengths[idx] = menuSequenceLength;
-  for (uint8_t i = 0; i < menuSequenceLength; i++) {
+  uint8_t lengthToSave = menuSequenceTargetLength;
+  if (lengthToSave < MIN_SEQUENCE_LENGTH || lengthToSave > MAX_SEQUENCE_LENGTH) {
+    lengthToSave = DEFAULT_SEQUENCE_LENGTH;
+  }
+  storedSequenceLengths[idx] = lengthToSave;
+  for (uint8_t i = 0; i < lengthToSave; i++) {
     storedSequences[idx][i] = menuSequenceBuffer[i];
   }
-  for (uint8_t i = menuSequenceLength; i < MAX_SEQUENCE_LENGTH; i++) {
+  for (uint8_t i = lengthToSave; i < MAX_SEQUENCE_LENGTH; i++) {
     storedSequences[idx][i] = 0;
   }
   saveSequencesToEEPROM();
@@ -1981,19 +2011,49 @@ void handleButtonPress(uint8_t index, unsigned long now) {
       if (number >= 1 && number <= SIDE_COUNT) {
         menuSelectedSide = number;
         resetMenuSequenceBuffer();
-        currentMode = MODE_MENU_ENTER_SEQUENCE;
-        showMenuEnterSequence();
+        uint8_t idx = menuSelectedSide - 1;
+        menuSequenceTargetLength = storedSequenceLengths[idx];
+        if (menuSequenceTargetLength < MIN_SEQUENCE_LENGTH ||
+            menuSequenceTargetLength > MAX_SEQUENCE_LENGTH) {
+          menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
+        }
+        currentMode = MODE_MENU_SELECT_LENGTH;
+        showMenuSelectLength();
       }
       // Note: No "Back" button defined here because buttons 1-4 are taken by sides.
       // You could check for a long hold to go back, but for now we follow the simple logic.
       break;
 
+    case MODE_MENU_SELECT_LENGTH:
+      if (number == 1) {
+        if (menuSequenceTargetLength > MIN_SEQUENCE_LENGTH) {
+          menuSequenceTargetLength--;
+          showMenuSelectLength();
+        }
+      } else if (number == 2) {
+        if (menuSequenceTargetLength < MAX_SEQUENCE_LENGTH) {
+          menuSequenceTargetLength++;
+          showMenuSelectLength();
+        }
+      } else if (number == 3) {
+        resetMenuSequenceBuffer();
+        currentMode = MODE_MENU_ENTER_SEQUENCE;
+        showMenuEnterSequence();
+      } else if (number == 4) {
+        currentMode = MODE_MENU_SELECT_SIDE;
+        menuSelectedSide = 0;
+        menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
+        resetMenuSequenceBuffer();
+        showMenuSelectSide();
+      }
+      break;
+
     // 1.1.1 ENTER SEQUENCE
     case MODE_MENU_ENTER_SEQUENCE:
-      if (menuSequenceLength < DEFAULT_SEQUENCE_LENGTH) {
+      if (menuSequenceLength < menuSequenceTargetLength) {
         menuSequenceBuffer[menuSequenceLength++] = number;
         showMenuEnterSequence();
-        if (menuSequenceLength >= DEFAULT_SEQUENCE_LENGTH) {
+        if (menuSequenceLength >= menuSequenceTargetLength) {
           currentMode = MODE_MENU_CONFIRM;
           showMenuConfirm();
         }
