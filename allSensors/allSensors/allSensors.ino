@@ -121,7 +121,7 @@ const uint16_t DISTANCE_MAX_BEHAVIOR_MM = 1000;       // ignore readings beyond 
 const float ACCEL_BASELINE_TOLERANCE = 0.08f;         // m/s^2 wiggle room over baseline noise
 const float ENV_TEMP_TOLERANCE_C = 0.6f;
 const float ENV_HUMIDITY_TOLERANCE = 3.0f;
-const float PECK_THRESHOLD_MARGIN_MS2 = 0.18f;        // extra kick above baseline vibration for a peck
+const float PECK_THRESHOLD_MARGIN_MS2 = 0.08f;        // extra kick above baseline vibration for a peck
 
 // -------------------- VL53L1X --------------------
 #define SENSOR_CHANNELS     4            // channels 0..3 used for sensors
@@ -188,6 +188,7 @@ SensorSnapshot lastSnapshot;
 float peckNoiseBaseline = 0.0f;
 char lastButtonEvent[16] = "";
 bool buttonEventPending = false;
+bool foodDeliveredSinceLastLog = false;
 
 // Simple buzzer helpers so we can try tone() first and fall back to a direct drive if needed.
 // Set BUZZER_USE_TONE to false near the pin definitions to switch to the direct pulse.
@@ -1090,7 +1091,7 @@ bool ensureLogFile(DateTime now) {
       file.print(i + 1);
       file.print(F(" (mm)"));
     }
-    file.print(F(", Temp (C), Humidity (%), Peck, State, Button"));
+    file.print(F(", Temp (C), Humidity (%), Peck, Food, State, Button"));
     file.println();
   }
 
@@ -1099,7 +1100,7 @@ bool ensureLogFile(DateTime now) {
   return true;
 }
 
-void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses, bool peckActive, const char* stateLabel = "", const char* buttonLabel = "") {
+void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses, bool peckActive, bool foodDelivered = false, const char* stateLabel = "", const char* buttonLabel = "") {
   if (!sdAvailable) {
     return;
   }
@@ -1156,9 +1157,92 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   file.print(F(", "));
   file.print(peckActive ? F("yes") : F("no"));
   file.print(F(", "));
+  file.print(foodDelivered ? F("yes") : F("no"));
+  file.print(F(", "));
   file.print(stateLabel);
   file.print(F(", "));
   file.println(buttonLabel);
+  file.flush();
+  file.close();
+}
+
+void appendSessionHeader(DateTime now) {
+  if (!sdAvailable) {
+    return;
+  }
+
+  if (!ensureLogFile(now)) {
+    return;
+  }
+
+  File file = SD.open(currentLogFilename, FILE_WRITE);
+  if (!file) {
+    return;
+  }
+
+  file.println();
+  file.print(F("-------------- "));
+  file.print(now.year());
+  file.print('-');
+  if (now.month() < 10) file.print('0');
+  file.print(now.month());
+  file.print('-');
+  if (now.day() < 10) file.print('0');
+  file.print(now.day());
+  file.println(F(" --------"));
+
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercentFromVoltage(voltage);
+  file.print(F("Battery: "));
+  file.print(voltage, 2);
+  file.print(F("V ("));
+  file.print(percent);
+  file.println(F("%)"));
+  file.flush();
+  file.close();
+}
+
+void appendShutdownNotice() {
+  if (!sdAvailable) {
+    return;
+  }
+
+  RTC_SELECT();
+  DateTime now = rtc.now();
+  if (!ensureLogFile(now)) {
+    return;
+  }
+
+  File file = SD.open(currentLogFilename, FILE_WRITE);
+  if (!file) {
+    return;
+  }
+
+  file.println();
+  file.print(F("Shutdown starting at "));
+  file.print(now.year());
+  file.print('-');
+  if (now.month() < 10) file.print('0');
+  file.print(now.month());
+  file.print('-');
+  if (now.day() < 10) file.print('0');
+  file.print(now.day());
+  file.print(' ');
+  if (now.hour() < 10) file.print('0');
+  file.print(now.hour());
+  file.print(':');
+  if (now.minute() < 10) file.print('0');
+  file.print(now.minute());
+  file.print(':');
+  if (now.second() < 10) file.print('0');
+  file.print(now.second());
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercentFromVoltage(voltage);
+  file.print(F(", Battery: "));
+  file.print(voltage, 2);
+  file.print(F("V ("));
+  file.print(percent);
+  file.println(F("%)"));
   file.flush();
   file.close();
 }
@@ -1512,6 +1596,9 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
   RTC_SELECT();
   snapshot.timestamp = rtc.now();
 
+  bool allowPeckDetect = samplingState != STATE_BASELINING;
+  float latestAccelMag = updatePeckDetection(nowMs, allowPeckDetect);
+
   // for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
   //   tcaSelect(ch);
   //   for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
@@ -1525,10 +1612,12 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
     tcaSelect(ch);
     for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
       uint8_t idx = ch * SENSORS_PER_CHANNEL + i;
-      
+
+      latestAccelMag = max(latestAccelMag, updatePeckDetection(millis(), allowPeckDetect));
+
       // OPTIMIZATION: Check dataReady() first!
       // If the sensor is busy, skipping it is better than freezing the CPU.
-      if (sensors[idx].dataReady()) { 
+      if (sensors[idx].dataReady()) {
           sensors[idx].read();
           snapshot.distances[idx] = sensors[idx].ranging_data.range_mm;
           snapshot.statuses[idx]  = sensors[idx].ranging_data.range_status;
@@ -1540,9 +1629,10 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
   snapshot.tempC = lastTempC;
   snapshot.humidity = lastHumidity;
 
-  bool allowPeckDetect = samplingState != STATE_BASELINING;
-  snapshot.accelMag = updatePeckDetection(nowMs, allowPeckDetect);
-  snapshot.peckActive = peckDetectedRecently(nowMs);
+  unsigned long finalNow = millis();
+  latestAccelMag = max(latestAccelMag, updatePeckDetection(finalNow, allowPeckDetect));
+  snapshot.accelMag = latestAccelMag;
+  snapshot.peckActive = peckDetectedRecently(finalNow);
   return true;
 }
 
@@ -1942,6 +2032,7 @@ void deliverRewardForSide(uint8_t side) {
 
   digitalWrite(EN_PIN, HIGH); // turn off tunnel motor after feeding completes
 
+  foodDeliveredSinceLastLog = true;
   lastMoveMs = millis();
 }
 
@@ -2271,7 +2362,8 @@ void readAndSend() {
           sendDistancesFramed(snapshot.distances);
         }
         
-        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, "FAST", buttonLabel);
+        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, "FAST", buttonLabel);
+        foodDeliveredSinceLastLog = false;
         buttonEventPending = false;
         lastSnapshot = snapshot;
       } else {
@@ -2293,7 +2385,8 @@ void readAndSend() {
         sendDistancesFramed(snapshot.distances);
       }
 
-      appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, "FAST", buttonLabel);
+      appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, "FAST", buttonLabel);
+      foodDeliveredSinceLastLog = false;
       buttonEventPending = false;
 
       bool withinBaseline = snapshotWithinBaseline(snapshot);
@@ -2334,6 +2427,7 @@ void drawSleepingBird(int x,int y){
 }
 
 void shutdownSequence(){
+  appendShutdownNotice();
   showShutdownBatteryWarnings();
 
   // 1) Say good night
@@ -2524,6 +2618,9 @@ void setup() {
     display.display();
     delay(1000);
   }
+
+  RTC_SELECT();
+  appendSessionHeader(rtc.now());
 
   // Put all sensors on all channels into reset first
   for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
