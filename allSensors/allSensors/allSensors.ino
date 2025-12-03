@@ -18,7 +18,7 @@ struct SensorSnapshot;
 #include <AccelStepper.h>
 
 // Flag to control whether the Uno R4 connection is expected/required
-bool expectUnoR4 = true;
+bool expectUnoR4 = false;
 
 const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; // 1 ms between button scans
 
@@ -181,11 +181,23 @@ unsigned long switchHighStart = 0;
 unsigned long startupMillis = 0;
 bool shutdownInitiated = false;
 
-void timerISR() {
-  if (buttonScanPending < 255) {
-    buttonScanPending++;
-  }
+// void timerISR() {
+//   if (buttonScanPending < 255) {
+//     buttonScanPending++;
+//   }
 
+//   sensorUpdateTickCounter++;
+//   if (sensorUpdateTickCounter >= sensorUpdateIntervalTicks) {
+//     sensorUpdateTickCounter = 0;
+//     sensorUpdateFlag = true;
+//   }
+// }
+void timerISR() {
+  // 1. Actually SCAN the buttons right now!
+  // This ensures we catch the press even if the main loop is busy.
+  scanButtons(millis());
+
+  // 2. Handle Sensor Timing
   sensorUpdateTickCounter++;
   if (sensorUpdateTickCounter >= sensorUpdateIntervalTicks) {
     sensorUpdateTickCounter = 0;
@@ -549,14 +561,23 @@ void loadSequencesFromEEPROM() {
 
 enum SystemMode {
   MODE_IDLE,
-  MODE_MENU_SELECT_SIDE,
-  MODE_MENU_ENTER_SEQUENCE,
+  MODE_MENU_MAIN,           // <--- NEW: Top Level
+  MODE_MENU_SELECT_SIDE,    // (Submenu 1)
+  MODE_MENU_DISPLAY_SELECT, // (Submenu 2)
+  MODE_MENU_OPTIONS,        // (Submenu 3)
+  MODE_MENU_ENTER_SEQUENCE, 
   MODE_MENU_CONFIRM,
-  MODE_MENU_MORE_OPTIONS,
   MODE_MENU_RESET_CONFIRM
 };
 
 SystemMode currentMode = MODE_IDLE;
+// New Enum for the Fast Mode Display Preference
+enum FastDisplayMode {
+  DISPLAY_MODE_BUTTONS, // The dot matrix view
+  DISPLAY_MODE_SENSORS  // The text values view
+};
+FastDisplayMode currentDisplayMode = DISPLAY_MODE_BUTTONS; 
+
 
 const unsigned long MENU_HOLD_MS = 3000;
 bool panel1MenuHoldActive = false;
@@ -851,16 +872,21 @@ bool sendDistancesToR4_chunked(const uint16_t* vals) {
 }
 
 // Send distances in framed chunks (4 values per frame)
+// Send distances in framed chunks (4 values per frame)
 bool sendDistancesFramed(const uint16_t *vals) {
   if (!expectUnoR4) {
     return true;
   }
+  
   const uint8_t CHUNK = 4;  // 4 values = 8 data bytes + 3 header = 11 total
+  
   for (uint8_t off = 0; off < SENSOR_COUNT; off += CHUNK) {
     uint8_t cnt = (off + CHUNK <= SENSOR_COUNT) ? CHUNK : (SENSOR_COUNT - off);
 
     UNO_R4_SELECT();
-    delay(3); // TCA settle
+    // No delay needed here if we aren't switching constantly, 
+    // but a tiny one helps the multiplexer settle.
+    delayMicroseconds(10); 
 
     Wire.beginTransmission(UNO_R4_ADDR);
     Wire.write('D');        // header
@@ -874,14 +900,11 @@ bool sendDistancesFramed(const uint16_t *vals) {
     }
 
     uint8_t err = Wire.endTransmission();    // 0 = OK
-    if (err != 0 && expectUnoR4) {
-      // Show exact error code to help if this ever trips again
-      tcaSelect(SCREEN_CHANNEL);
-      display.clearDisplay();
-      display.setTextSize(1);
-      display.setCursor(0, 0); display.print(F("I2C send ERR=")); display.println(err); // 2=NACK addr, 3=NACK data
-      display.display();
-      return false;
+    
+    if (err != 0) {
+      // FIX: Do NOT pause or draw to OLED here. 
+      // If the R4 is missing, just return false and keep running.
+      return false; 
     }
 
     delayMicroseconds(200); // small gap between frames
@@ -1004,10 +1027,30 @@ void flushSdCard() {
   }
 }
 
-void scanButtons() {
-  unsigned long now = millis();
-  uint8_t portValues[BUTTON_PORT_COUNT];
+// void scanButtons() {
+//   unsigned long now = millis();
+//   uint8_t portValues[BUTTON_PORT_COUNT];
 
+//   for (uint8_t group = 0; group < BUTTON_PORT_COUNT; group++) {
+//     volatile uint8_t *portReg = buttonPortInputRegs[group];
+//     portValues[group] = portReg ? *portReg : 0xFF;
+//   }
+
+//   for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+//     uint8_t group = buttonPortGroup[i];
+//     uint8_t newState = (portValues[group] & buttonBitMask[i]) ? HIGH : LOW;
+//     if (newState != buttonRawState[i]) {
+//       buttonRawState[i] = newState;
+//       buttonLastChange[i] = now;
+//       buttonPendingMask |= (uint16_t)1 << i;
+//     }
+//   }
+// }
+
+// Update this function to accept 'now' as an argument
+void scanButtons(unsigned long now) {
+  // Read all ports immediately (Direct Port Manipulation is fast enough for ISR)
+  uint8_t portValues[BUTTON_PORT_COUNT];
   for (uint8_t group = 0; group < BUTTON_PORT_COUNT; group++) {
     volatile uint8_t *portReg = buttonPortInputRegs[group];
     portValues[group] = portReg ? *portReg : 0xFF;
@@ -1016,10 +1059,13 @@ void scanButtons() {
   for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
     uint8_t group = buttonPortGroup[i];
     uint8_t newState = (portValues[group] & buttonBitMask[i]) ? HIGH : LOW;
+    
+    // Detect Change
     if (newState != buttonRawState[i]) {
       buttonRawState[i] = newState;
       buttonLastChange[i] = now;
-      buttonPendingMask |= (uint16_t)1 << i;
+      // We found a change, mark it pending so the main loop can handle the Logic later
+      buttonPendingMask |= (uint16_t)1 << i; 
     }
   }
 }
@@ -1275,13 +1321,27 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
   RTC_SELECT();
   snapshot.timestamp = rtc.now();
 
+  // for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
+  //   tcaSelect(ch);
+  //   for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
+  //     uint8_t idx = ch * SENSORS_PER_CHANNEL + i;
+  //     sensors[idx].read();
+  //     snapshot.distances[idx] = sensors[idx].ranging_data.range_mm;
+  //     snapshot.statuses[idx]  = sensors[idx].ranging_data.range_status;
+  //   }
+  // }
   for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
     tcaSelect(ch);
     for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
       uint8_t idx = ch * SENSORS_PER_CHANNEL + i;
-      sensors[idx].read();
-      snapshot.distances[idx] = sensors[idx].ranging_data.range_mm;
-      snapshot.statuses[idx]  = sensors[idx].ranging_data.range_status;
+      
+      // OPTIMIZATION: Check dataReady() first!
+      // If the sensor is busy, skipping it is better than freezing the CPU.
+      if (sensors[idx].dataReady()) { 
+          sensors[idx].read();
+          snapshot.distances[idx] = sensors[idx].ranging_data.range_mm;
+          snapshot.statuses[idx]  = sensors[idx].ranging_data.range_status;
+      }
     }
   }
 
@@ -1327,32 +1387,87 @@ void displayFastSnapshot(const SensorSnapshot& snapshot) {
 
   OLED_SELECT();
   display.clearDisplay();
-  unsigned long nowDisplay = millis();
-  drawStatusHeader(nowDisplay);
+  
+  // 1. Draw Header (Batt, Temp, Hum, Peck)
+  drawStatusHeader(millis());
+
+  // 2. Draw "FAST" label (Optional, maybe small)
   display.setTextSize(1);
-  display.setCursor(0, 10);
-  display.print(F("State: FAST"));
-  display.setCursor(0, 26);
-  display.print(F("Hall sensors:"));
-  bool anyHall = false;
-  uint8_t y = 36;
-  for (uint8_t i = 0; i < SIDE_COUNT; i++) {
-    if (digitalRead(sideHallPins[i]) == LOW) {
-      display.setCursor(0, y);
-      display.print(F("Side "));
-      display.print(i + 1);
-      display.print(F(" active"));
-      y += 10;
-      anyHall = true;
-    }
+  display.setCursor(0, 12);
+  display.print(F("ACTIVE MODE"));
+
+  // 3. Draw Button Matrix
+  // Layout: 4 Columns for Panels 1, 2, 3, 4
+  // Y-Start: 25
+  const uint8_t yBase = 25;
+  const uint8_t panelSpacing = 32; // 128px / 4 panels = 32px per panel
+  
+  // Draw Panel Labels (1, 2, 3, 4)
+  for(uint8_t p=1; p<=4; p++) {
+    uint8_t x = (p-1) * panelSpacing;
+    display.setCursor(x + 10, yBase);
+    display.print(F("P")); display.print(p);
   }
-  if (!anyHall) {
-    display.setCursor(0, 36);
-    display.print(F("No hall active"));
+
+  // Iterate over all 16 buttons to draw their state
+  for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+    uint8_t panel = buttonPanels[i];
+    uint8_t btnNum = buttonNumbers[i]; // 1, 2, 3, 4
+
+    // Safety check for unknown panels
+    if (panel == PANEL_UNKNOWN || panel < 1 || panel > 4) continue;
+
+    // Calculate Position
+    // X: Based on Panel column + offset
+    // Y: Based on Button Number (stacking them vertically)
+    //    Button 1 & 2 on top row, 3 & 4 on bottom row? 
+    //    Or just a vertical stack: 1, 2, 3, 4. Let's do vertical stack.
+    
+    uint8_t colX = (panel - 1) * panelSpacing + 12; // Center in the column
+    uint8_t rowY = yBase + 10 + ((btnNum - 1) * 8); // 8px spacing per button
+
+    // Draw the indicator
+    // Radius 3 circle
+    if (buttonState[i] == LOW) {
+      // PRESSED: Filled Circle
+      display.fillCircle(colX, rowY, 3, SSD1306_WHITE);
+    } else {
+      // RELEASED: Outline Circle
+      display.drawCircle(colX, rowY, 3, SSD1306_WHITE);
+    }
   }
 
   display.display();
 }
+
+void displaySensorSnapshot(const SensorSnapshot& snapshot) {
+  if (currentMode != MODE_IDLE) return;
+
+  OLED_SELECT();
+  display.clearDisplay();
+  drawStatusHeader(millis()); // Keep the nice header
+
+  display.setTextSize(1);
+  // Grid layout for 12 sensors
+  // Col 1: x=0, Col 2: x=64
+  for (uint8_t i = 0; i < SENSOR_COUNT; i += 2) {
+    uint8_t y = 12 + (i / 2) * 9; // Compact vertical spacing
+    
+    // Left Column
+    display.setCursor(0, y);
+    display.print(F("S")); display.print(i + 1); display.print(F(":"));
+    if (snapshot.statuses[i] == 0) display.print(snapshot.distances[i]);
+    else display.print(F("--"));
+    
+    // Right Column
+    display.setCursor(64, y);
+    display.print(F("S")); display.print(i + 2); display.print(F(":"));
+    if (snapshot.statuses[i + 1] == 0) display.print(snapshot.distances[i + 1]);
+    else display.print(F("--"));
+  }
+  display.display();
+}
+
 
 void drawPeckIndicator(unsigned long nowMs) {
   display.setTextSize(1);
@@ -1366,9 +1481,58 @@ void drawPeckIndicator(unsigned long nowMs) {
   }
 }
 
+// --- VISUALIZATION HELPERS ---
+
 void drawStatusHeader(unsigned long nowMs) {
-  drawBatteryStatus(nowMs);
-  drawPeckIndicator(nowMs);
+  // 1. Clear the top bar
+  display.fillRect(0, 0, SCREEN_WIDTH, 10, SSD1306_BLACK);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // --- BATTERY (Left Side) ---
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercentFromVoltage(voltage);
+  bool chargerConnected = isChargerConnected();
+
+  // Draw Battery Icon
+  display.drawRect(0, 0, 14, 8, SSD1306_WHITE);
+  display.fillRect(14, 2, 2, 4, SSD1306_WHITE); // Positive nub
+
+  // Fill Battery Icon
+  int cappedPercent = constrain(percent, 0, 100);
+  uint8_t fillW = (uint8_t)(10.0f * cappedPercent / 100.0f); // 12px internal width
+  if (fillW > 0 && (!chargerConnected || ((nowMs / 500) % 2 == 0))) {
+    display.fillRect(2, 2, fillW, 4, SSD1306_WHITE);
+  }
+
+  // Draw Battery Text (Tight layout)
+  display.setCursor(19, 0);
+  display.print(percent);
+  display.print(F("%"));
+  // Only show voltage if we have room (optional, helps fit temp/hum)
+  // display.print(voltage, 1); 
+
+  // --- TEMP & HUMIDITY (Right of Battery) ---
+  // Positioned at x=55 to center-right
+  display.setCursor(55, 0);
+  if (!isnan(lastTempC)) {
+    display.print((int)lastTempC);
+    display.print(F("C "));
+  }
+  if (!isnan(lastHumidity)) {
+    display.print((int)lastHumidity);
+    display.print(F("%"));
+  }
+
+  // --- PECK INDICATOR (Far Right) ---
+  // Drawn at x=118
+  if (accelReady && peckDetectedRecently(nowMs)) {
+    // Draw a "Play" triangle icon to indicate activity
+    display.fillTriangle(120, 1, 120, 7, 126, 4, SSD1306_WHITE);
+  }
+  
+  // Draw a separator line
+  display.drawLine(0, 9, SCREEN_WIDTH, 9, SSD1306_WHITE);
 }
 
 void displayMenuMessage(const __FlashStringHelper* line1,
@@ -1488,7 +1652,7 @@ void showMenuResetConfirm() {
 }
 
 void enterMenu() {
-  currentMode = MODE_MENU_SELECT_SIDE;
+  currentMode = MODE_MENU_MAIN; // Changed from MODE_MENU_SELECT_SIDE
   menuAwaitingRelease = true;
   menuSelectedSide = 0;
   resetMenuSequenceBuffer();
@@ -1623,12 +1787,64 @@ void handleMenuActivationHold(unsigned long now) {
     menuHoldStart = 0;
   }
 }
+void showMenuMain() {
+  OLED_SELECT();
+  display.clearDisplay();
+  drawStatusHeader(millis());
+  display.setTextSize(1);
+  display.setCursor(0, 10);
+  display.println(F("MAIN MENU"));
+  display.println(F("1. Change Sequences"));
+  display.println(F("2. Change Display"));
+  display.println(F("3. Options"));
+  display.println(F("4. Exit Menu"));
+  display.display();
+}
+void showMenuDisplaySelect() {
+  OLED_SELECT();
+  display.clearDisplay();
+  drawStatusHeader(millis());
+  display.setTextSize(1);
+  display.setCursor(0, 10);
+  display.println(F("DISPLAY MODE"));
+  
+  display.setCursor(0, 25);
+  if(currentDisplayMode == DISPLAY_MODE_BUTTONS) display.print(F(">> "));
+  display.println(F("1. Buttons (Dots)"));
+  
+  display.setCursor(0, 35);
+  if(currentDisplayMode == DISPLAY_MODE_SENSORS) display.print(F(">> "));
+  display.println(F("2. Sensor Values"));
+  
+  display.setCursor(0, 55);
+  display.println(F("4. Back"));
+  display.display();
+}
+void showMenuOptions() {
+  OLED_SELECT();
+  display.clearDisplay();
+  drawStatusHeader(millis());
+  display.setTextSize(1);
+  display.setCursor(0, 10);
+  display.println(F("OPTIONS"));
+  
+  display.println(F("1. Factory Reset"));
+  // Spacer
+  display.print(F("2. Uno R4: "));
+  display.println(expectUnoR4 ? F("ON") : F("OFF"));
+  
+  display.setCursor(0, 55);
+  display.println(F("4. Back"));
+  display.display();
+}
 
 void handleButtonPress(uint8_t index, unsigned long now) {
   uint8_t panel = buttonPanels[index];
   if (panel == PANEL_UNKNOWN) return;
   uint8_t number = buttonNumbers[index];
 
+  // --- FAST MODE TRIGGER ---
+  // Any button press wakes the system into fast mode
   snprintf(lastButtonEvent, sizeof(lastButtonEvent), "P%uB%u", panel, number);
   buttonEventPending = true;
   if (samplingState != STATE_FAST_SAMPLING && samplingState != STATE_BASELINING) {
@@ -1636,19 +1852,40 @@ void handleButtonPress(uint8_t index, unsigned long now) {
     setSensorIntervalMs(SENSOR_INTERVAL_FAST_MS);
     stableSinceMs = 0;
     lastChangeDuringFastMs = now;
-    showStateBanner(F("FAST"));
+    showStateBanner(F("WAKE UP")); // Brief banner
   }
 
+  // --- IDLE / SEQUENCE ENTRY ---
   if (currentMode == MODE_IDLE) {
-    if (panel == 1 && panel1MenuHoldActive) return;
+    if (panel == 1 && panel1MenuHoldActive) return; // Ignore if holding for menu
     processSequenceInput(panel, number, now);
     return;
   }
 
+  // --- MENU NAVIGATION ---
+  // Only Panel 1 controls the menu
   if (panel != 1) return;
   if (menuAwaitingRelease) return;
 
   switch (currentMode) {
+    
+    // 1. MAIN MENU
+    case MODE_MENU_MAIN:
+      if (number == 1) {
+        currentMode = MODE_MENU_SELECT_SIDE;
+        showMenuSelectSide();
+      } else if (number == 2) {
+        currentMode = MODE_MENU_DISPLAY_SELECT;
+        showMenuDisplaySelect();
+      } else if (number == 3) {
+        currentMode = MODE_MENU_OPTIONS;
+        showMenuOptions();
+      } else if (number == 4) {
+        exitMenu();
+      }
+      break;
+
+    // 1.1 SELECT SIDE (For Sequences)
     case MODE_MENU_SELECT_SIDE:
       if (number >= 1 && number <= SIDE_COUNT) {
         menuSelectedSide = number;
@@ -1656,7 +1893,11 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         currentMode = MODE_MENU_ENTER_SEQUENCE;
         showMenuEnterSequence();
       }
+      // Note: No "Back" button defined here because buttons 1-4 are taken by sides.
+      // You could check for a long hold to go back, but for now we follow the simple logic.
       break;
+
+    // 1.1.1 ENTER SEQUENCE
     case MODE_MENU_ENTER_SEQUENCE:
       if (menuSequenceLength < DEFAULT_SEQUENCE_LENGTH) {
         menuSequenceBuffer[menuSequenceLength++] = number;
@@ -1667,54 +1908,66 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         }
       }
       break;
+
+    // 1.1.2 CONFIRM SEQUENCE
     case MODE_MENU_CONFIRM:
       if (number == 1) {
-        saveMenuSequence();
+        saveMenuSequence(); // Saves and exits
       } else if (number == 2) {
         resetMenuSequenceBuffer();
         currentMode = MODE_MENU_ENTER_SEQUENCE;
-        showMenuEnterSequence();
+        showMenuEnterSequence(); // Retry
       } else if (number == 3) {
-        menuSelectedSide = 0;
-        resetMenuSequenceBuffer();
+        // Return to Main Menu
+        currentMode = MODE_MENU_MAIN;
+        showMenuMain();
+      } else if (number == 4) {
+        // Return to Side Selection
         currentMode = MODE_MENU_SELECT_SIDE;
         showMenuSelectSide();
-      } else if (number == 4) {
-
-        currentMode = MODE_MENU_MORE_OPTIONS;
-        showMenuMoreOptions();
       }
       break;
-    case MODE_MENU_MORE_OPTIONS:
+
+    // 2. DISPLAY SELECT
+    case MODE_MENU_DISPLAY_SELECT:
+      if (number == 1) {
+        currentDisplayMode = DISPLAY_MODE_BUTTONS;
+        showMenuDisplaySelect(); // Update checkmark
+      } else if (number == 2) {
+        currentDisplayMode = DISPLAY_MODE_SENSORS;
+        showMenuDisplaySelect(); // Update checkmark
+      } else if (number == 4) {
+        currentMode = MODE_MENU_MAIN;
+        showMenuMain();
+      }
+      break;
+
+    // 3. OPTIONS
+    case MODE_MENU_OPTIONS:
       if (number == 1) {
         currentMode = MODE_MENU_RESET_CONFIRM;
         showMenuResetConfirm();
       } else if (number == 2) {
-        exitMenu();
-      } else if (number == 3) {
         expectUnoR4 = !expectUnoR4;
-        saveSequencesToEEPROM();
-        showMenuMoreOptions();
+        saveSequencesToEEPROM(); // Save preference
+        showMenuOptions();       // Update text
       } else if (number == 4) {
-        currentMode = MODE_MENU_CONFIRM;
-        showMenuConfirm();
-
+        currentMode = MODE_MENU_MAIN;
+        showMenuMain();
       }
       break;
+
+    // 3.1 RESET CONFIRM
     case MODE_MENU_RESET_CONFIRM:
       if (number == 1) {
-        resetToFactoryDefaults();
-      } else if (number == 2) {
-        currentMode = MODE_MENU_MORE_OPTIONS;
-        showMenuMoreOptions();
-      } else if (number == 3) {
-        exitMenu();
-      } else if (number == 4) {
-        currentMode = MODE_MENU_MORE_OPTIONS;
-        showMenuMoreOptions();
-
+        resetToFactoryDefaults(); // Resets and exits
+      } else {
+        // Any other button cancels back to Options
+        currentMode = MODE_MENU_OPTIONS;
+        showMenuOptions();
       }
       break;
+
     default:
       break;
   }
@@ -1760,8 +2013,14 @@ void readAndSend() {
         fastModeStartMs = nowMs;
         stableSinceMs = 0;
         lastChangeDuringFastMs = nowMs;
+        
         displayFastSnapshot(snapshot);
-        sendDistancesFramed(snapshot.distances);
+        
+        // FIX: Only send to R4 if we are NOT in the menu
+        if (currentMode == MODE_IDLE) {
+          sendDistancesFramed(snapshot.distances);
+        }
+        
         appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, "FAST", buttonLabel);
         buttonEventPending = false;
         lastSnapshot = snapshot;
@@ -1773,8 +2032,17 @@ void readAndSend() {
     }
 
     case STATE_FAST_SAMPLING: {
-      displayFastSnapshot(snapshot);
-      sendDistancesFramed(snapshot.distances);
+      if (currentDisplayMode == DISPLAY_MODE_SENSORS) {
+          displaySensorSnapshot(snapshot);
+      } else {
+          displayFastSnapshot(snapshot); 
+      }
+
+      // FIX: Only send to R4 if we are NOT in the menu
+      if (currentMode == MODE_IDLE) {
+        sendDistancesFramed(snapshot.distances);
+      }
+
       appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, "FAST", buttonLabel);
       buttonEventPending = false;
 
@@ -2065,87 +2333,100 @@ void setup() {
 
 
 void loop() {
-  uint8_t scansToProcess = 0;
+  unsigned long now = millis();
+
+  // ---------------------------------------------------------
+  // 1. CHECK SENSOR TIMER (Atomic)
+  // ---------------------------------------------------------
   bool performSensorUpdate = false;
 
   noInterrupts();
-  scansToProcess = buttonScanPending;
-  buttonScanPending = 0;
   if (sensorUpdateFlag) {
     sensorUpdateFlag = false;
     performSensorUpdate = true;
   }
   interrupts();
 
-  while (scansToProcess > 0) {
-    scanButtons();
-    scansToProcess--;
-  }
-
-  unsigned long now = millis();
-
-  bool hasPending = false;
-
+  // ---------------------------------------------------------
+  // 2. PROCESS PENDING BUTTON SCANS (The Optimized Block)
+  // ---------------------------------------------------------
+  // Take a snapshot of pending buttons so we don't toggle interrupts constantly
+  uint16_t snapshotPending = 0;
+  
   noInterrupts();
-  hasPending = buttonPendingMask != 0;
+  snapshotPending = buttonPendingMask;
   interrupts();
 
-  if (hasPending) {
+  if (snapshotPending) {
     for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
       uint16_t bit = (uint16_t)1 << i;
-      bool shouldUpdate = false;
-      uint8_t rawState = HIGH;
 
-      noInterrupts();
-      if (buttonPendingMask & bit) {
-        unsigned long lastChange = buttonLastChange[i];
-        rawState = buttonRawState[i];
-        if ((now - lastChange) >= BUTTON_DEBOUNCE_MS) {
-          buttonPendingMask &= ~bit;
-          shouldUpdate = true;
-        }
-      }
-      interrupts();
+      // Only waste CPU cycles checking buttons that actually changed
+      if (snapshotPending & bit) {
+        
+        unsigned long lastChange;
+        uint8_t rawState;
 
-      if (shouldUpdate) {
-        uint8_t currentState;
+        // Retrieve the ISR data atomically
         noInterrupts();
-        currentState = buttonState[i];
+        lastChange = buttonLastChange[i];
+        rawState = buttonRawState[i];
         interrupts();
 
-        if (currentState != rawState) {
-          buttonState[i] = rawState;
+        // Debounce Check
+        if ((now - lastChange) >= BUTTON_DEBOUNCE_MS) {
+          
+          // Clear the pending bit safely
           noInterrupts();
-          buttonEventMask |= bit;
+          buttonPendingMask &= ~bit;
           interrupts();
+
+          // Update the stable state
+          // We don't need noInterrupts for buttonState access here 
+          // because the ISR only touches buttonRawState, not buttonState.
+          if (buttonState[i] != rawState) {
+            buttonState[i] = rawState;
+            
+            // Mark that a verified event occurred
+            noInterrupts();
+            buttonEventMask |= bit;
+            interrupts();
+          }
         }
       }
     }
   }
 
-  uint16_t pendingButtons = 0;
+  // ---------------------------------------------------------
+  // 3. HANDLE VERIFIED BUTTON EVENTS
+  // ---------------------------------------------------------
+  uint16_t pendingEvents = 0;
 
   noInterrupts();
-  pendingButtons = buttonEventMask;
+  pendingEvents = buttonEventMask;
   buttonEventMask = 0;
   interrupts();
+
+  // Handle "Hold Panel 1" logic (Menu entry)
   handleMenuActivationHold(now);
 
+  // If in menu and waiting for release
   if (currentMode != MODE_IDLE && menuAwaitingRelease && allPanel1Released()) {
     menuAwaitingRelease = false;
-    showMenuSelectSide();
+    showMenuMain();
   }
 
   updateSequenceTimeouts(now);
 
-  if (pendingButtons) {
+  // Process the actual clicks
+  if (pendingEvents) {
     for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
-      if (pendingButtons & ((uint16_t)1 << i)) {
-        uint8_t state;
-        noInterrupts();
-        state = buttonState[i];
-        interrupts();
+      if (pendingEvents & ((uint16_t)1 << i)) {
+        
+        // We already updated buttonState[i] in step 2, so just read it
+        uint8_t state = buttonState[i];
 
+        // Edge Detection: Input Pullup means LOW is pressed
         if (prevButtonState[i] == HIGH && state == LOW) {
           handleButtonPress(i, now);
         }
@@ -2154,7 +2435,11 @@ void loop() {
     }
   }
 
+  // ---------------------------------------------------------
+  // 4. POWER SWITCH LOGIC (Shutdown)
+  // ---------------------------------------------------------
   if (!shutdownInitiated && (now - startupMillis) > SWITCH_STARTUP_GRACE_MS) {
+    // If switch is HIGH, it means it is OPEN (OFF position for active-low switch)
     if (digitalRead(SWITCH_DETECT_PIN) == HIGH) {
       if (switchHighStart == 0) {
         switchHighStart = now;
@@ -2167,7 +2452,11 @@ void loop() {
     }
   }
 
-  if (performSensorUpdate) {
+  // ---------------------------------------------------------
+  // 5. SENSOR READS (Low Priority)
+  // ---------------------------------------------------------
+  // Only read sensors if the flag was set AND we aren't mid-shutdown
+  if (performSensorUpdate && !shutdownInitiated) {
     readAndSend();
   }
 }
