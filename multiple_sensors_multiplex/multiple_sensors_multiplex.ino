@@ -41,7 +41,9 @@ void disableStepper() {
 }
 
 
-#define LOG_INTERVAL 5000  
+#define LOG_INTERVAL 5000
+const unsigned long SENSOR_POLL_INTERVAL = 200; // 5 Hz
+const unsigned long ACCEL_CHECK_INTERVAL = 100; // 10 Hz
 
 const int BATTERY_PIN = A0;
 
@@ -77,7 +79,9 @@ RTC_DS3231 rtc;  // Initialize RTC module
 Adafruit_LSM303_Accel_Unified accel = Adafruit_LSM303_Accel_Unified(54321);
 // float magnitude = sqrt(x*x + y*y + z*z);
 
-unsigned long lastSDWriteTime = 0;  
+unsigned long lastSDWriteTime = 0;
+unsigned long lastSensorPollTime = 0;
+unsigned long lastAccelCheckTime = 0;
 String currentLogFile = "";  // Store filename (8.3 format)
 int lastLoggedDay = -1;  
 
@@ -241,57 +245,43 @@ void setup() {
 //////////////////////////////////////////////////////////////////////////////////////
 
 void loop() {
-  int rawADC = analogRead(BATTERY_PIN);
-  float voltageAtPin = rawADC * (1.1 / 1023.0);  // now using 1.1V reference
-  float batteryVoltage = voltageAtPin * 12.0;
-  int batteryPercent = constrain(map(batteryVoltage * 100, 900, 1260, 0, 100), 0, 100);
+  unsigned long currentMillis = millis();
 
-  // Serial.print("Battery Voltage: ");
-  // Serial.print(batteryVoltage);
-  // Serial.println(" V");
-  
-
-  static unsigned long lastSDWriteTime = 0;  // Track last SD write time
-
-  tcaSelect(SCREEN_CHANNEL);
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-
-  tcaSelect(SCREEN_CHANNEL);
-  display.setCursor(SCREEN_WIDTH - 30, 0); // top-right corner
-  display.print(String(batteryPercent) + "%");
-  display.setCursor(0, 0); // top-left for time (same line)
-  
-  bool presenceDetected = (digitalRead(PRESENCE_PIN) == HIGH); 
+  bool presenceDetected = (digitalRead(PRESENCE_PIN) == HIGH);
   if (presenceDetected) {
     digitalWrite(LED_BUILTIN, HIGH);  // Turn on LED
-    
-  }else{
-    digitalWrite(LED_BUILTIN, LOW); 
+  } else {
+    digitalWrite(LED_BUILTIN, LOW);
   }
 
-  // --- Tap detection ---
-  sensors_event_t event;
-  accel.getEvent(&event);
+  if (currentMillis - lastAccelCheckTime >= ACCEL_CHECK_INTERVAL) {
+    lastAccelCheckTime = currentMillis;
 
-  // Simple magnitude check
-  float accelMag = sqrt(event.acceleration.x * event.acceleration.x +
-                        event.acceleration.y * event.acceleration.y +
-                        event.acceleration.z * event.acceleration.z);
+    // --- Tap detection ---
+    sensors_event_t event;
+    accel.getEvent(&event);
 
-  if (abs(accelMag - 9.8) > TAP_THRESHOLD) {  // Adjust sensitivity
-    tcaSelect(SCREEN_CHANNEL);
-    display.setCursor(0, SCREEN_HEIGHT - 8);  // Last line
-    display.print("TAP DETECTED!");
+    // Simple magnitude check
+    float accelMag = sqrt(event.acceleration.x * event.acceleration.x +
+                          event.acceleration.y * event.acceleration.y +
+                          event.acceleration.z * event.acceleration.z);
+
+    if (abs(accelMag - 9.8) > TAP_THRESHOLD) {  // Adjust sensitivity
+      tcaSelect(SCREEN_CHANNEL);
+      display.setCursor(0, SCREEN_HEIGHT - 8);  // Last line
+      display.print("TAP DETECTED!");
+      display.display();
+    }
   }
-
 
   // ✅ Magnet Sensor Reading
   bool magnetDetected = (digitalRead(MAGNET_SENSOR_PIN) == LOW);  // LOW means magnet detected
   if (magnetDetected) {
     // digitalWrite(LED_BUILTIN, HIGH);  // Turn on LED
+    tcaSelect(SCREEN_CHANNEL);
+    display.setCursor(0, SCREEN_HEIGHT - 16);
     display.println(F("MAGNET DETECTED"));
+    display.display();
 
     // Shut down sensors for low current draw
     for (uint8_t ch = 0; ch < CHANNEL_COUNT; ch++) {
@@ -314,11 +304,29 @@ void loop() {
 
     delay(500);
 
-    } else {
-      // digitalWrite(LED_BUILTIN, LOW);  // Turn off LED
-      disableStepper();
-      
-    }
+  } else {
+    // digitalWrite(LED_BUILTIN, LOW);  // Turn off LED
+    disableStepper();
+
+  }
+
+  if (currentMillis - lastSensorPollTime < SENSOR_POLL_INTERVAL) {
+    return;
+  }
+  lastSensorPollTime = currentMillis;
+
+  int rawADC = analogRead(BATTERY_PIN);
+  float voltageAtPin = rawADC * (1.1 / 1023.0);  // now using 1.1V reference
+  float batteryVoltage = voltageAtPin * 12.0;
+  int batteryPercent = constrain(map(batteryVoltage * 100, 900, 1260, 0, 100), 0, 100);
+
+  tcaSelect(SCREEN_CHANNEL);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.setCursor(SCREEN_WIDTH - 30, 0); // top-right corner
+  display.print(String(batteryPercent) + "%");
+  display.setCursor(0, 0); // top-left for time (same line)
 
   DateTime now = rtc.now();
   // Check if the day has changed and update the log file
@@ -326,11 +334,11 @@ void loop() {
     updateLogFile(now);
   }
 
-  String logData = String(now.year()) + "-" + 
-                   String(now.month()) + "-" + 
-                   String(now.day()) + " " + 
-                   String(now.hour()) + ":" + 
-                   String(now.minute()) + ":" + 
+  String logData = String(now.year()) + "-" +
+                   String(now.month()) + "-" +
+                   String(now.day()) + " " +
+                   String(now.hour()) + ":" +
+                   String(now.minute()) + ":" +
                    String(now.second()) + ", ";
 
   tcaSelect(SCREEN_CHANNEL);
@@ -347,7 +355,7 @@ void loop() {
     for (uint8_t i = 0; i < sensorsPerChannel; i++) {
       tcaSelect(ch);
       uint16_t distance = sensors[i].read();
-      
+
       tcaSelect(SCREEN_CHANNEL);
       display.print(F("S"));
       display.print(i + 1);
@@ -356,10 +364,10 @@ void loop() {
         display.print(F(": "));
         display.print(distance);
         display.println(F(" mm"));
-        logData += String(distance) + ", ";  
+        logData += String(distance) + ", ";
       } else {
         display.println(F(": Timeout"));
-        logData += "Timeout, ";  
+        logData += "Timeout, ";
       }
     }
   }
@@ -372,8 +380,6 @@ void loop() {
     saveToSD(logData);
     lastSDWriteTime = millis();
   }
-  delay(50); // Faster refresh rate
-  
 }
 
 
