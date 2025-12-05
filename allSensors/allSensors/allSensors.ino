@@ -491,7 +491,7 @@ void showBatteryWarningScreen(int percent, const __FlashStringHelper* line1, con
 }
 
 // --- power switch debounce state ---
-const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 200;
+const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 1000;
 const unsigned long SWITCH_STARTUP_GRACE_MS = 1000;
 unsigned long switchHighStart = 0;
 unsigned long startupMillis = 0;
