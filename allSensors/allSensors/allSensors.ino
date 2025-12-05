@@ -38,7 +38,7 @@ FastDisplayMode currentDisplayMode = DISPLAY_MODE_BUTTONS;
 const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; 
 
 // Sampling cadence
-const unsigned long SENSOR_INTERVAL_FAST_MS = 100;      
+const unsigned long SENSOR_INTERVAL_FAST_MS = 300;      
 const unsigned long SENSOR_INTERVAL_SLEEP_MS = 1000;    
 const unsigned long SENSOR_INTERVAL_BASELINE_MS = 100; 
 
@@ -265,9 +265,10 @@ float accelBaselineY = 9.81f;
 float accelBaselineZ = 0.0f;
 unsigned long lastPeckDetectedMs = 0;
 // High-sensitivity, fast peck detection tuned for light taps
+bool visualPeckPending = false;
 const float ACCEL_BASELINE_ALPHA = 0.15f;       // slow baseline keeps small shocks visible
-const unsigned long PECK_HOLD_MS = 700;         // quick visual reset for rapid tuning
-const bool SERIAL_ACCEL_DEBUG = true;           // emit raw + filtered accel readings over Serial
+const unsigned long PECK_HOLD_MS = 350;         // quick visual reset for rapid tuning
+const bool SERIAL_ACCEL_DEBUG = false;           // emit raw + filtered accel readings over Serial
 const unsigned long ACCEL_DEBUG_INTERVAL_MS = 10;
 const unsigned long SERIAL_BAUD = 115200;
 
@@ -280,7 +281,7 @@ const uint16_t DISTANCE_MAX_BEHAVIOR_MM = 1000;        // ignore readings beyond
 const float ACCEL_BASELINE_TOLERANCE = 0.08f;          // m/s^2 wiggle room over baseline noise
 const float ENV_TEMP_TOLERANCE_C = 0.6f;
 const float ENV_HUMIDITY_TOLERANCE = 3.0f;
-const float PECK_THRESHOLD_MARGIN_MS2 = 0.60f;         // extra kick above baseline vibration for a peck
+const float PECK_THRESHOLD_MARGIN_MS2 = 0.3f;         // extra kick above baseline vibration for a peck
 // We store these to display them on the new screen
 float vizDx = 0.0f, vizDy = 0.0f, vizDz = 0.0f;
 float vizPeakX = 0.0f, vizPeakY = 0.0f, vizPeakZ = 0.0f;
@@ -290,6 +291,7 @@ float vizRawX = 0.0f, vizRawY = 0.0f, vizRawZ = 0.0f;
 
 // Timer for resetting peaks
 unsigned long lastPeakResetMs = 0;
+
 
 // -------------------- VL53L1X --------------------
 #define SENSOR_CHANNELS     4            // channels 0..3 used for sensors
@@ -360,6 +362,10 @@ float peckNoiseBaseline = 0.0f;
 char lastButtonEvent[16] = "";
 bool buttonEventPending = false;
 bool foodDeliveredSinceLastLog = false;
+
+// Watchdog: Track when we last heard from each sensor
+unsigned long lastSensorUpdate[SENSOR_COUNT] = {0};
+const unsigned long SENSOR_TIMEOUT_MS = 4000; // Reset sensor if no data for 4 seconds
 
 // Simple buzzer helpers so we can try tone() first and fall back to a direct drive if needed.
 // Set BUZZER_USE_TONE to false near the pin definitions to switch to the direct pulse.
@@ -1393,39 +1399,50 @@ float updatePeckDetection(unsigned long nowMs, bool allowDetect) {
   sensors_event_t event;
   if (!accel.getEvent(&event)) return 0.0f;
 
-  // 1. Capture Raw "Live" Values for display
+  // Update Visualization Globals
   vizRawX = event.acceleration.x;
   vizRawY = event.acceleration.y;
   vizRawZ = event.acceleration.z;
 
-  // 2. High-pass filter calculations
+  // High-pass filter
   float dx = event.acceleration.x - accelBaselineX;
   float dy = event.acceleration.y - accelBaselineY;
   float dz = event.acceleration.z - accelBaselineZ;
 
-  // 3. Update Baselines (Slowly adapt to gravity)
   accelBaselineX += ACCEL_BASELINE_ALPHA * dx;
   accelBaselineY += ACCEL_BASELINE_ALPHA * dy;
   accelBaselineZ += ACCEL_BASELINE_ALPHA * dz;
 
-  // 4. Track 5-Second Peaks (Absolute Deltas)
-  // This shows the intensity of the "Shock" relative to baseline
+  // Peak Tracking
   if (nowMs - lastPeakResetMs > 5000) {
-    vizPeakX = 0;
-    vizPeakY = 0;
-    vizPeakZ = 0;
+    vizPeakX = 0; vizPeakY = 0; vizPeakZ = 0;
     lastPeakResetMs = nowMs;
   }
-  
   if (abs(dx) > vizPeakX) vizPeakX = abs(dx);
   if (abs(dy) > vizPeakY) vizPeakY = abs(dy);
   if (abs(dz) > vizPeakZ) vizPeakZ = abs(dz);
 
-  // 5. Calculate Magnitude for Trigger
+  // Calculate Magnitude
   float highpassMag = sqrtf(dx * dx + dy * dy + dz * dz);
 
-  if (allowDetect && highpassMag > PECK_THRESHOLD_MARGIN_MS2) {
-    lastPeckDetectedMs = nowMs;
+  // --- AUDIO DEBUGGING LOGIC ---
+  // Only run this if we are NOT currently baselining (so we don't beep during setup)
+  if (allowDetect) {
+      
+      // 1. THE TRIGGER
+      if (highpassMag > PECK_THRESHOLD_MARGIN_MS2) {
+        lastPeckDetectedMs = nowMs;
+        visualPeckPending = true;
+        // SUCCESS: High Pitch Beep (1000Hz, 50ms)
+        if (BUZZER_USE_TONE) tone(BUZZER_PIN, 1000, 50); 
+      }
+      // 2. THE "NEAR MISS"
+      // If we see a shock that is clearly not noise (> 0.15), but below threshold
+      else if (highpassMag > 0.15f) {
+         // FAIL: Low Pitch Beep (200Hz, 20ms)
+         // This tells you: "I felt that, but you need to lower the threshold!"
+        //  if (BUZZER_USE_TONE) tone(BUZZER_PIN, 200, 20);
+      }
   }
 
   return highpassMag;
@@ -1540,66 +1557,65 @@ bool snapshotChangedSince(const SensorSnapshot& a, const SensorSnapshot& b) {
   return false;
 }
 
+
+void runHighSpeedAccelCheck() {
+  // 1. Throttle slightly (2ms = 500Hz sampling)
+  // 500Hz is fast enough to catch any tap, but slow enough to save some CPU.
+  static unsigned long lastAccelCheck = 0;
+  unsigned long now = millis();
+  if (now - lastAccelCheck < 2) return;
+  lastAccelCheck = now;
+
+  // 2. Run the detection logic
+  // "true" means allow it to update the lastPeckDetectedMs timestamp if triggered
+  bool allowDetect = (samplingState != STATE_BASELINING);
+  updatePeckDetection(now, allowDetect);
+}
+
 bool captureSensorSnapshot(SensorSnapshot& snapshot) {
-  unsigned long nowMs = millis();
-  
-  // -------------------------------------------------
-  // 1. ALWAYS UPDATE TIME & ACCELEROMETER (High Speed)
-  // -------------------------------------------------
+  // 1. UPDATE TIME
   RTC_SELECT();
   snapshot.timestamp = rtc.now();
 
-  bool allowPeckDetect = samplingState != STATE_BASELINING;
-  // Check peck ONCE per loop, not 12 times inside the sensor loop
-  float currentAccelMag = updatePeckDetection(nowMs, allowPeckDetect);
-  
-  // Update environment (Temperature/Humidity)
-  updateEnvironmentReadings(nowMs);
-  snapshot.tempC = lastTempC;
-  snapshot.humidity = lastHumidity;
-
-  // -------------------------------------------------
-  // 2. CONDITIONALLY UPDATE DISTANCE SENSORS (Throttled)
-  // -------------------------------------------------
-  // Only poll sensors every 25ms. 
-  // Sensors run at 20ms, so 25ms ensures data IS ready when we ask.
+  // 2. READ DISTANCE SENSORS (Throttled)
+  // Only poll sensors if enough time has passed (e.g. 25ms to allow processing)
   static unsigned long lastSensorPollMs = 0;
-  bool timeToReadSensors = (nowMs - lastSensorPollMs >= 25);
-
-  if (timeToReadSensors) {
+  unsigned long nowMs = millis();
+  
+  if (nowMs - lastSensorPollMs >= 25) {
     lastSensorPollMs = nowMs;
 
     for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
       tcaSelect(ch);
-      delayMicroseconds(5); // Tiny settling time for Mux
+      delayMicroseconds(10); 
 
       for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
         uint8_t idx = ch * SENSORS_PER_CHANNEL + i;
 
-        // Try to read. If 'E4' is happening, this checks safety.
-        // dataReady() is a quick I2C register check.
         if (sensors[idx].dataReady()) { 
-            // Valid data waiting? Read it.
             sensors[idx].read();
             latestDistances[idx] = sensors[idx].ranging_data.range_mm;
             latestStatuses[idx]  = sensors[idx].ranging_data.range_status;
+            lastSensorUpdate[idx] = nowMs; // Feed watchdog
         }
-        // If data wasn't ready, we simply keep the value from the last pass.
       }
     }
   }
 
-  // -------------------------------------------------
-  // 3. FILL SNAPSHOT FROM GLOBAL MEMORY
-  // -------------------------------------------------
-  // We always fill the snapshot with the latest KNOWN values.
-  // This prevents "0" flickering between reads.
+  // 3. FILL SNAPSHOT
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
     snapshot.distances[i] = latestDistances[i];
     snapshot.statuses[i]  = latestStatuses[i];
   }
 
-  snapshot.accelMag = currentAccelMag;
+  // 4. GET ENVIRONMENT
+  updateEnvironmentReadings(nowMs);
+  snapshot.tempC = lastTempC;
+  snapshot.humidity = lastHumidity;
+
+  // 5. GET ACCEL DATA FROM GLOBAL VARS (Updated by main loop now)
+  // We just read the values the main loop has been updating
+  snapshot.accelMag = vizPeakX; // Or whichever metric you want to log
   snapshot.peckActive = peckDetectedRecently(nowMs);
   
   return true;
@@ -1772,10 +1788,15 @@ void drawPeckIndicator(unsigned long nowMs) {
   display.setTextColor(SSD1306_WHITE);
   display.fillRect(118, 0, 10, 10, SSD1306_BLACK);
 
-  if (accelReady && peckDetectedRecently(nowMs)) {
+  // Check if a peck is currently active OR if one is pending display
+  if (accelReady && (peckDetectedRecently(nowMs) || visualPeckPending)) {
+    
     const uint8_t x = 120;
     const uint8_t y = 1;
     display.fillTriangle(x, y + 6, x + 6, y + 6, x + 3, y, SSD1306_WHITE);
+    
+    // Clear the latch now that we have drawn it
+    visualPeckPending = false; 
   }
 }
 
@@ -2582,6 +2603,43 @@ void forcePrimingRead() {
 }
 
 
+void checkSensorHealth(unsigned long now) {
+  for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+    // If we haven't heard from this sensor in X seconds
+    if (now - lastSensorUpdate[i] > SENSOR_TIMEOUT_MS) {
+      
+      // Calculate topology
+      uint8_t channel = i / SENSORS_PER_CHANNEL;
+      uint8_t slot    = i % SENSORS_PER_CHANNEL;
+
+      // 1. Visually notify (Optional, helpful for debug)
+      tcaSelect(SCREEN_CHANNEL);
+      display.fillRect(0,0, 10, 10, SSD1306_WHITE); // Flash corner
+      display.display();
+      buzzTest(1000, 500); //1khz, 500ms
+
+
+      // 2. Perform Hard Reset via XSHUT
+      // This physically cuts the sensor logic power
+      digitalWrite(xshutPins[i], LOW);
+      delay(5);
+      digitalWrite(xshutPins[i], HIGH);
+      delay(5);
+
+      // 3. Re-Initialize
+      // We reuse your existing logic, which handles Mux selection and Addressing
+      if (initSensorOn(channel, slot)) {
+        // Success! Reset timer
+        lastSensorUpdate[i] = now;
+      } else {
+        // Failed to revive. Reset timer anyway so we don't try again immediately
+        // and lag the system. We will try again in 4 seconds.
+        lastSensorUpdate[i] = now; 
+      }
+    }
+  }
+}
+
 
 // -------------------- SETUP/LOOP --------------------
 void setup() {
@@ -2788,6 +2846,12 @@ void setup() {
   delay(1000);
 
   forcePrimingRead(); 
+  // Initialize watchdog timers
+  unsigned long now = millis();
+  for(int i=0; i<SENSOR_COUNT; i++) {
+    lastSensorUpdate[i] = now;
+  }
+
 
   samplingState = STATE_BASELINING;
   resetBaselineAccumulator();
@@ -2798,12 +2862,77 @@ void setup() {
   // Record the completion of the boot sequence so the shutdown debounce
   // ignores any start-up noise on the switch sense line.
   startupMillis = millis();
+
+
+
+  // --------------------------------------------------------------------------
+  // DEBUG TRAP: If enabled, hijack the system and only stream Accelerometer data
+  // --------------------------------------------------------------------------
+  if (SERIAL_ACCEL_DEBUG) {
+    Serial.begin(SERIAL_BAUD);
+    while(!Serial); // Wait for USB connection
+    Serial.println(F("--- ACCELEROMETER TUNING MODE ---"));
+    Serial.println(F("Open Tools > Serial Plotter (Ctrl+Shift+L)"));
+    
+    // Turn off the noisy buzzer/steppers just in case
+    digitalWrite(EN_PIN, HIGH);
+    digitalWrite(EN_PIN2, HIGH);
+    digitalWrite(BUZZER_PIN, LOW);
+
+    while (true) {
+      RTC_SELECT(); // Ensure we are talking to the right I2C channel
+      sensors_event_t event;
+      if (accel.getEvent(&event)) {
+        
+        // --- REPLICATE THE EXACT FILTER MATH ---
+        // We duplicate the logic here so you see exactly what the 'peck' logic sees
+        
+        float dx = event.acceleration.x - accelBaselineX;
+        float dy = event.acceleration.y - accelBaselineY;
+        float dz = event.acceleration.z - accelBaselineZ;
+
+        // Update the baselines (Simulate the adaptation)
+        accelBaselineX += ACCEL_BASELINE_ALPHA * dx;
+        accelBaselineY += ACCEL_BASELINE_ALPHA * dy;
+        accelBaselineZ += ACCEL_BASELINE_ALPHA * dz;
+
+        // Calculate the Magnitude (The "Shock" value)
+        float shockMagnitude = sqrt(dx*dx + dy*dy + dz*dz);
+
+        // --- PRINT FOR SERIAL PLOTTER ---
+        // Format: "Label:Value,Label:Value..."
+        
+        // 1. The Signal we are watching
+        Serial.print(F("Shock:")); 
+        Serial.print(shockMagnitude);
+        
+        // 2. The Threshold line (Visual reference)
+        Serial.print(F(",Threshold:")); 
+        Serial.print(PECK_THRESHOLD_MARGIN_MS2);
+
+        // 3. (Optional) Raw Z vs Baseline Z to see how 'Alpha' tracks gravity
+        // Useful to see if swaying affects the reading
+        Serial.print(F(",RawZ:")); 
+        Serial.print(event.acceleration.z);
+        Serial.print(F(",BaseZ:")); 
+        Serial.println(accelBaselineZ);
+      }
+      
+      // Sampling rate for Serial Plotter visibility
+      // 10ms = 100Hz. Fast enough to see pecks, slow enough to read.
+      delay(10); 
+    }
+  }
 }
 
 
 
 void loop() {
   unsigned long now = millis();
+
+
+  runHighSpeedAccelCheck();
+
 
   // ---------------------------------------------------------
   // 1. CHECK SENSOR TIMER (Atomic)
@@ -2928,5 +3057,6 @@ void loop() {
   // Only read sensors if the flag was set AND we aren't mid-shutdown
   if (performSensorUpdate && !shutdownInitiated) {
     readAndSend();
+    checkSensorHealth(millis()); // 
   }
 }
