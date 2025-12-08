@@ -51,7 +51,7 @@ SequenceLogicMode currentLogicMode = SEQ_LOGIC_ORDERED;
 const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; 
 
 // Sampling cadence
-const unsigned long SENSOR_INTERVAL_FAST_MS = 300;      
+const unsigned long SENSOR_INTERVAL_FAST_MS = 100;      
 const unsigned long SENSOR_INTERVAL_SLEEP_MS = 1000;    
 const unsigned long SENSOR_INTERVAL_BASELINE_MS = 100; 
 
@@ -568,7 +568,7 @@ void setSensorIntervalMs(unsigned long intervalMs) {
 #define STEPS_PER_REV_FOOD  200     // gear motor for food dispenser
 const int STEPS_90      = (STEPS_PER_REV * MICROSTEPS) / 4;        // quarter turn main motor
 const int STEPS_45_FOOD = (STEPS_PER_REV_FOOD * MICROSTEPS) / 8;  // 360 degrees turn food motor
-const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 1L) / 360L); // ~20° back-off
+const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 20L) / 360L); // ~20° back-off
 
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 1500;   // high/low pulse width (slower for precise tunnel alignment)
@@ -2087,15 +2087,28 @@ void deliverRewardForSide(uint8_t side) {
   digitalWrite(EN_PIN, LOW); 
 
   foodStepper.enableOutputs();
+  // // worms sequence
+  // foodStepper.setMaxSpeed(950);      // Very slow
+  // foodStepper.setAcceleration(1000);  // Smooth ramp up
+ 
+  // int dispenseAmount = STEPS_45_FOOD * 8; 
+  // foodStepper.move(STEPS_45_FOOD + dispenseAmount); 
+  // while (foodStepper.distanceToGo() != 0) {
+  //   foodStepper.run();
+  //   // Safety: If you want to keep buttons alive during this slow phase, uncomment below:
+  //   // if (buttonScanPending) { scanButtons(millis()); buttonScanPending = 0; }
+  // }
 
+
+// cat pellets sequence
   // --- PHASE 1: THE JACKHAMMER (Vibration) ---
   // We use extreme acceleration to create mechanical shock.
   // This shakes the pellets to break "bridges" (air gaps) in the hopper.
   foodStepper.setMaxSpeed(2000);      
   foodStepper.setAcceleration(50000); // Extreme acceleration = Impact force
 
-  // Rapidly oscillate 10 times
-  for(int i=0; i<10; i++) {
+  // Rapidly oscillate 5 times
+  for(int i=0; i<5; i++) {
     // Jolt Forward
     foodStepper.move(90); 
     while (foodStepper.distanceToGo() != 0) foodStepper.run();
@@ -2115,7 +2128,7 @@ void deliverRewardForSide(uint8_t side) {
   delay(100); // Brief pause to let gravity drop the pellet
 
   // --- PHASE 3: THE BULLDOZER (Extrusion) ---
-   foodStepper.setMaxSpeed(150);      // Very slow
+   foodStepper.setMaxSpeed(850);      // Very slow
   foodStepper.setAcceleration(500);  // Smooth ramp up
  
   int dispenseAmount = STEPS_45_FOOD * 4; 
@@ -2132,7 +2145,7 @@ void deliverRewardForSide(uint8_t side) {
   while (foodStepper.distanceToGo() != 0) foodStepper.run();
 
   // Slow and steady. Low speed = Maximum Torque.
-  foodStepper.setMaxSpeed(350);      // Very slow
+  foodStepper.setMaxSpeed(950);      // Very slow
   foodStepper.setAcceleration(500);  // Smooth ramp up
   
   // Move forward enough to dispense (Back + Dispense Amount)
@@ -2146,10 +2159,10 @@ void deliverRewardForSide(uint8_t side) {
     // Safety: If you want to keep buttons alive during this slow phase, uncomment below:
     // if (buttonScanPending) { scanButtons(millis()); buttonScanPending = 0; }
   }
-
+// cat pellets sequence end
   // --- PHASE 4: ANTI-DRIP ---
   // Small retract to stop food from falling out later
-  foodStepper.setSpeed(400);
+  foodStepper.setMaxSpeed(400);
   foodStepper.move(-STEPS_DELOCK_FOOD);
   while (foodStepper.distanceToGo() != 0) foodStepper.run();
 
@@ -2400,7 +2413,8 @@ void executeMenuCommand(uint8_t number) {
         currentMode = MODE_MENU_OPTIONS;
         showMenuOptions();
       } else if (number == 4) {
-        exitMenu();
+        currentMode = MODE_MENU_SHUTDOWN_CONFIRM;
+        showMenuShutdownConfirm();
       }
       break;
 
@@ -2581,6 +2595,17 @@ void displayDeploymentView(const SensorSnapshot& snapshot, const char* btnLbl) {
   // We need to know if we showed something last frame so we can clear it
   static bool screenIsDirty = true; 
 
+  // --- FIX START ---
+  // 1. If we are in a Menu, STOP. Do not touch the screen.
+  //    Allow the Menu functions to control the display.
+  if (currentMode != MODE_IDLE) {
+    // Mark screen as 'Dirty' so that when we return to Idle, 
+    // we immediately wipe the menu text and show "System Active".
+    screenIsDirty = true; 
+    return; 
+  }
+  // --- FIX END ---
+
   // Check for interesting events
   bool isPeck   = snapshot.peckActive;
   bool isButton = (btnLbl[0] != '\0');
@@ -2609,13 +2634,11 @@ void displayDeploymentView(const SensorSnapshot& snapshot, const char* btnLbl) {
     display.display(); // Takes ~40ms, but necessary for info
     screenIsDirty = true; // Mark that the screen has content
   }
-  // 2. If NO event, but screen has old junk, CLEAR IT ONCE
+  // 2. If NO event, but screen has old junk (from an event OR a menu), CLEAR IT ONCE
   else if (screenIsDirty) {
     OLED_SELECT();
     display.clearDisplay();
     
-    // Optional: Draw a tiny dot or "Ready" text so you know it's on?
-    // Or leave completely black for "Stealth". Let's do simple text.
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
@@ -2625,8 +2648,7 @@ void displayDeploymentView(const SensorSnapshot& snapshot, const char* btnLbl) {
     screenIsDirty = false; // Screen is now "Clean" (mostly empty)
   }
   // 3. If NO event and screen is already Clean...
-  // DO NOTHING! Return immediately. 
-  // This saves ~40ms of I2C transfer time, giving it to the Accelerometer.
+  // DO NOTHING! Return immediately to save CPU.
 }
 
 
