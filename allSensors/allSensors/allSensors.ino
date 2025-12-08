@@ -20,6 +20,10 @@ struct SensorSnapshot;
 // ---------------------------------------------------------
 // 1. GLOBAL SETTINGS & ENUMS (MUST BE AT THE TOP)
 // ---------------------------------------------------------
+// --- LOGGING GLOBALS ---
+File sessionFile; // Keeps the file open in memory
+unsigned long lastLogSyncMs = 0;
+const unsigned long LOG_SYNC_INTERVAL_MS = 2000; // Physically save to SD every 2 seconds
 
 // Flag to control whether the Uno R4 connection is expected/required
 bool expectUnoR4 = false;
@@ -28,12 +32,21 @@ bool expectUnoR4 = false;
 enum FastDisplayMode {
   DISPLAY_MODE_BUTTONS, // 0: The dot matrix view
   DISPLAY_MODE_SENSORS, // 1: The text values view
-  DISPLAY_MODE_ACCEL    // 2: Accelerometer Debug
+  DISPLAY_MODE_DEPLOY   // 2: Deployment / Stealth Mode (Only updates on events)
 };
 
 // GLOBAL VARIABLE: Defines what we see on screen. 
 // Defined HERE so the Storage functions below can see it.
 FastDisplayMode currentDisplayMode = DISPLAY_MODE_BUTTONS; 
+// --- NEW: SEQUENCE LOGIC MODE ---
+// --- SEQUENCE LOGIC MODE ---
+enum SequenceLogicMode {
+  SEQ_LOGIC_ORDERED,   // 0: Must press 1 -> 2 -> 3
+  SEQ_LOGIC_ANY,       // 1: Press 1, 2, 3 in any order (Collection)
+  SEQ_LOGIC_IMMEDIATE  // 2: NEW: Pressing 1 OR 2 OR 3 gives reward instantly
+};
+// Default to old behavior
+SequenceLogicMode currentLogicMode = SEQ_LOGIC_ORDERED;
 
 const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; 
 
@@ -101,15 +114,19 @@ uint8_t currentTunnelSide = 1;
 
 const uint8_t DEFAULT_SEQUENCE_TEMPLATE[DEFAULT_SEQUENCE_LENGTH] = {1, 2, 3, 4};
 const uint32_t SEQUENCE_STORAGE_MAGIC = 0xB105EED1;
-const uint8_t SEQUENCE_STORAGE_VERSION = 4;
+const uint8_t SEQUENCE_STORAGE_VERSION = 5;
 const int SEQUENCE_STORAGE_ADDR = 0;
+
+// Timer to defer Panel 1 reward to check for menu entry
+unsigned long panel1DeferredRewardMs = 0;
 
 // The Main Storage Struct
 struct SequenceStorage {
   uint32_t magic;
   uint8_t version;
   uint8_t expectUnoR4Enabled;
-  uint8_t fastDisplayMode; // Store as uint8_t
+  uint8_t fastDisplayMode;
+  uint8_t logicMode; // <--- NEW FIELD (0=Ordered, 1=Any)
   uint8_t lengths[SIDE_COUNT];
   uint8_t sequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
   uint8_t checksum;
@@ -123,6 +140,7 @@ struct SequenceStorage {
     sum += version;
     sum += expectUnoR4Enabled;
     sum += fastDisplayMode; 
+    sum += logicMode; // Add to checksum
     for (uint8_t side = 0; side < SIDE_COUNT; side++) {
       sum += lengths[side];
       for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
@@ -161,9 +179,8 @@ void saveSequencesToEEPROM() {
   data.magic = SEQUENCE_STORAGE_MAGIC;
   data.version = SEQUENCE_STORAGE_VERSION;
   data.expectUnoR4Enabled = expectUnoR4 ? 1 : 0;
-  
-  // NOW VALID: currentDisplayMode is defined above
   data.fastDisplayMode = (uint8_t)currentDisplayMode; 
+  data.logicMode = (uint8_t)currentLogicMode; // <--- SAVE MODE
 
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
     data.lengths[side] = storedSequenceLengths[side];
@@ -174,9 +191,6 @@ void saveSequencesToEEPROM() {
   data.checksum = data.computeChecksum();
 
   EEPROM.put(SEQUENCE_STORAGE_ADDR, data);
-  // Note: buzzTest implementation is further down, but linker handles it.
-  // Ideally, move buzzTest implementation up or forward declare it.
-  // I added a forward declaration above for you.
   buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
 }
 
@@ -184,10 +198,8 @@ void loadSequencesFromEEPROM() {
   uint32_t magic = 0;
   EEPROM.get(SEQUENCE_STORAGE_ADDR, magic);
 
-  // If magic is wrong, reset everything
   if (magic != SEQUENCE_STORAGE_MAGIC) {
     applyDefaultSequences();
-    currentDisplayMode = DISPLAY_MODE_BUTTONS;
     saveSequencesToEEPROM();
     return;
   }
@@ -195,7 +207,6 @@ void loadSequencesFromEEPROM() {
   uint8_t version = 0;
   EEPROM.get(SEQUENCE_STORAGE_ADDR + sizeof(uint32_t), version);
 
-  // If version matches, load the new struct
   if (version == SEQUENCE_STORAGE_VERSION) {
     SequenceStorage data;
     EEPROM.get(SEQUENCE_STORAGE_ADDR, data);
@@ -203,10 +214,14 @@ void loadSequencesFromEEPROM() {
     if (data.computeChecksum() == data.checksum) {
       expectUnoR4 = (data.expectUnoR4Enabled != 0);
       
-      // Load Display Mode
-      uint8_t mode = data.fastDisplayMode;
-      if (mode > 2) mode = 0; 
-      currentDisplayMode = (FastDisplayMode)mode;
+      uint8_t dMode = data.fastDisplayMode;
+      if (dMode > 2) dMode = 0; 
+      currentDisplayMode = (FastDisplayMode)dMode;
+
+      // LOAD LOGIC MODE
+      uint8_t lMode = data.logicMode;
+      if (lMode > 1) lMode = 0;
+      currentLogicMode = (SequenceLogicMode)lMode;
 
       for (uint8_t side = 0; side < SIDE_COUNT; side++) {
         storedSequenceLengths[side] = data.lengths[side];
@@ -219,7 +234,7 @@ void loadSequencesFromEEPROM() {
     }
   }
 
-  // Version mismatch or checksum fail -> Reset defaults
+  // Fallback for older versions
   applyDefaultSequences();
   saveSequencesToEEPROM();
 }
@@ -273,7 +288,7 @@ const unsigned long ACCEL_DEBUG_INTERVAL_MS = 10;
 const unsigned long SERIAL_BAUD = 115200;
 
 // -------- Low-power & sampling states --------
-const unsigned long BASELINE_DURATION_MS = 3000;
+const unsigned long BASELINE_DURATION_MS = 5000;
 const unsigned long FAST_STABLE_HOLD_MS = 5000;        // stay stable for 5 s before napping
 const unsigned long BASELINE_REFRESH_MS = 180000;      // 3 minutes of steady readings => new baseline
 const uint16_t DISTANCE_BASELINE_TOLERANCE_MM = 25;    // allowable drift before waking
@@ -368,15 +383,16 @@ unsigned long lastSensorUpdate[SENSOR_COUNT] = {0};
 const unsigned long SENSOR_TIMEOUT_MS = 4000; // Reset sensor if no data for 4 seconds
 
 // Simple buzzer helpers so we can try tone() first and fall back to a direct drive if needed.
-// Set BUZZER_USE_TONE to false near the pin definitions to switch to the direct pulse.
-void buzzTest(uint16_t freqHz = BUZZER_TEST_FREQ_HZ, uint16_t durationMs = BUZZER_TONE_DURATION_MS) {
+
+void buzzTest(uint16_t freqHz, uint16_t durationMs) {
   if (BUZZER_USE_TONE) {
-    tone(BUZZER_PIN, freqHz, durationMs);
-    delay(durationMs);
-    noTone(BUZZER_PIN);
+    // Just start the tone. It stops automatically after durationMs.
+    // No delay needed!
+    tone(BUZZER_PIN, freqHz, durationMs); 
   } else {
+    // Keep this short delay only for non-tone buzzers
     digitalWrite(BUZZER_PIN, HIGH);
-    delay(BUZZER_PULSE_DURATION_MS);
+    delay(min(durationMs, (uint16_t)20)); // Cap the delay to 20ms max to prevent lag
     digitalWrite(BUZZER_PIN, LOW);
   }
 }
@@ -497,7 +513,7 @@ void showBatteryWarningScreen(int percent, const __FlashStringHelper* line1, con
 }
 
 // --- power switch debounce state ---
-const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 1000;
+const unsigned long SWITCH_DEBOUNCE_DELAY_MS = 3000;
 const unsigned long SWITCH_STARTUP_GRACE_MS = 1000;
 unsigned long switchHighStart = 0;
 unsigned long startupMillis = 0;
@@ -664,7 +680,8 @@ enum SystemMode {
   MODE_MENU_OPTIONS,        // (Submenu 3)
   MODE_MENU_ENTER_SEQUENCE,
   MODE_MENU_CONFIRM,
-  MODE_MENU_RESET_CONFIRM
+  MODE_MENU_RESET_CONFIRM,
+  MODE_MENU_SHUTDOWN_CONFIRM
 };
 
 SystemMode currentMode = MODE_IDLE;
@@ -1004,108 +1021,98 @@ bool sendDistancesFramed(const uint16_t *vals) {
 }
 
 bool ensureLogFile(DateTime now) {
-  if (!sdAvailable) {
-    return false;
+  if (!sdAvailable) return false;
+
+  // 1. Check if date changed (Need new filename?)
+  bool newDay = (currentLogYear != now.year() || currentLogMonth != now.month() || currentLogDay != now.day());
+
+  if (newDay) {
+    // Close old file if open
+    closeLogFile();
+    
+    // Update filename
+    currentLogYear = now.year();
+    currentLogMonth = now.month();
+    currentLogDay = now.day();
+    snprintf(currentLogFilename, sizeof(currentLogFilename), "%04d%02d%02d.txt", currentLogYear, currentLogMonth, currentLogDay);
   }
 
-  if (currentLogYear == now.year() &&
-      currentLogMonth == now.month() &&
-      currentLogDay == now.day() &&
-      currentLogFilename[0] != '\0') {
-    return true;
-  }
+  // 2. If file is not open, open it
+  if (!sessionFile) {
+    bool fileExists = SD.exists(currentLogFilename);
+    sessionFile = SD.open(currentLogFilename, FILE_WRITE);
+    
+    if (!sessionFile) return false; // Failed to open
 
-  currentLogYear = now.year();
-  currentLogMonth = now.month();
-  currentLogDay = now.day();
-  snprintf(currentLogFilename, sizeof(currentLogFilename), "%04d%02d%02d.txt", currentLogYear, currentLogMonth, currentLogDay);
-
-  bool fileExists = SD.exists(currentLogFilename);
-  File file = SD.open(currentLogFilename, FILE_WRITE);
-  if (!file) {
-    return false;
-  }
-
-  if (!fileExists) {
-    file.print(F("Date, Time"));
-    for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-      file.print(F(", Sensor"));
-      file.print(i + 1);
-      file.print(F(" (mm)"));
+    // Write header if new
+    if (!fileExists) {
+      sessionFile.print(F("Date, Time"));
+      for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+        sessionFile.print(F(", Sensor"));
+        sessionFile.print(i + 1);
+        sessionFile.print(F(" (mm)"));
+      }
+      sessionFile.print(F(", Temp (C), Humidity (%), Peck, Food, State, Button"));
+      sessionFile.println();
     }
-    file.print(F(", Temp (C), Humidity (%), Peck, Food, State, Button"));
-    file.println();
   }
 
-  file.flush();
-  file.close();
   return true;
 }
 
 void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses, bool peckActive, bool foodDelivered = false, const char* stateLabel = "", const char* buttonLabel = "") {
-  if (!sdAvailable) {
-    return;
-  }
+  if (!sdAvailable) return;
+  if (!ensureLogFile(timestamp)) return; // Ensures sessionFile is valid
 
-  if (!ensureLogFile(timestamp)) {
-    return;
-  }
-
-  File file = SD.open(currentLogFilename, FILE_WRITE);
-  if (!file) {
-    return;
-  }
-
-  file.print(timestamp.year());
-  file.print('-');
-  if (timestamp.month() < 10) file.print('0');
-  file.print(timestamp.month());
-  file.print('-');
-  if (timestamp.day() < 10) file.print('0');
-  file.print(timestamp.day());
-  file.print(F(", "));
-  if (timestamp.hour() < 10) file.print('0');
-  file.print(timestamp.hour());
-  file.print(':');
-  if (timestamp.minute() < 10) file.print('0');
-  file.print(timestamp.minute());
-  file.print(':');
-  if (timestamp.second() < 10) file.print('0');
-  file.print(timestamp.second());
+  // --- FAST WRITE TO RAM ---
+  sessionFile.print(timestamp.year());
+  sessionFile.print('-');
+  if (timestamp.month() < 10) sessionFile.print('0');
+  sessionFile.print(timestamp.month());
+  sessionFile.print('-');
+  if (timestamp.day() < 10) sessionFile.print('0');
+  sessionFile.print(timestamp.day());
+  sessionFile.print(F(", "));
+  if (timestamp.hour() < 10) sessionFile.print('0');
+  sessionFile.print(timestamp.hour());
+  sessionFile.print(':');
+  if (timestamp.minute() < 10) sessionFile.print('0');
+  sessionFile.print(timestamp.minute());
+  sessionFile.print(':');
+  if (timestamp.second() < 10) sessionFile.print('0');
+  sessionFile.print(timestamp.second());
 
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-    file.print(F(", "));
+    sessionFile.print(F(", "));
     if (statuses[i] == 0) {
-      file.print(distances[i]);
+      sessionFile.print(distances[i]);
     } else {
-      file.print(F("timeout"));
+      sessionFile.print(F("timeout"));
     }
   }
 
-  file.print(F(", "));
-  if (isnan(lastTempC)) {
-    file.print(F("n/a"));
-  } else {
-    file.print(lastTempC, 2);
-  }
+  sessionFile.print(F(", "));
+  if (isnan(lastTempC)) sessionFile.print(F("n/a")); else sessionFile.print(lastTempC, 2);
+  sessionFile.print(F(", "));
+  if (isnan(lastHumidity)) sessionFile.print(F("n/a")); else sessionFile.print(lastHumidity, 2);
 
-  file.print(F(", "));
-  if (isnan(lastHumidity)) {
-    file.print(F("n/a"));
-  } else {
-    file.print(lastHumidity, 2);
-  }
+  sessionFile.print(F(", "));
+  sessionFile.print(peckActive ? F("yes") : F("no"));
+  sessionFile.print(F(", "));
+  sessionFile.print(foodDelivered ? F("yes") : F("no"));
+  sessionFile.print(F(", "));
+  sessionFile.print(stateLabel);
+  sessionFile.print(F(", "));
+  sessionFile.println(buttonLabel);
 
-  file.print(F(", "));
-  file.print(peckActive ? F("yes") : F("no"));
-  file.print(F(", "));
-  file.print(foodDelivered ? F("yes") : F("no"));
-  file.print(F(", "));
-  file.print(stateLabel);
-  file.print(F(", "));
-  file.println(buttonLabel);
-  file.flush();
-  file.close();
+  // --- LAZY FLUSH STRATEGY ---
+  // Only physically write to card if:
+  // 1. Time interval passed (2 seconds)
+  // 2. OR Important event happened (Food / Button) - We don't want to lose these on power loss
+  if ((millis() - lastLogSyncMs > LOG_SYNC_INTERVAL_MS) || foodDelivered || (buttonLabel[0] != '\0')) {
+     sessionFile.flush(); // This is the slow part (20-40ms)
+     lastLogSyncMs = millis();
+  }
 }
 
 void appendSessionHeader(DateTime now) {
@@ -1434,7 +1441,7 @@ float updatePeckDetection(unsigned long nowMs, bool allowDetect) {
         lastPeckDetectedMs = nowMs;
         visualPeckPending = true;
         // SUCCESS: High Pitch Beep (1000Hz, 50ms)
-        if (BUZZER_USE_TONE) tone(BUZZER_PIN, 1000, 50); 
+        // if (BUZZER_USE_TONE) tone(BUZZER_PIN, 1000, 50); 
       }
       // 2. THE "NEAR MISS"
       // If we see a shock that is clearly not noise (> 0.15), but below threshold
@@ -2004,6 +2011,24 @@ void enterMenu() {
                      F("buttons to begin"));
 }
 
+void saveAndExit() {
+  // Save current state (Logic Mode, Display Mode, Sequences)
+  saveSequencesToEEPROM();
+  
+  // Visual Feedback
+  OLED_SELECT();
+  display.clearDisplay();
+  drawStatusHeader(millis());
+  display.setTextSize(2);
+  display.setCursor(10, 25);
+  display.println(F("SAVED!"));
+  display.display();
+  delay(500); // Brief pause so user sees it
+  
+  // Return to Idle
+  exitMenu();
+}
+
 void exitMenu() {
   currentMode = MODE_IDLE;
   menuAwaitingRelease = false;
@@ -2141,29 +2166,99 @@ void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now
   uint8_t expectedLength = storedSequenceLengths[idx];
   if (expectedLength == 0) return;
 
+  // Timeout Logic (Applies to Ordered/Set modes, irrelevant for Immediate but harmless)
   if (sequenceProgress[idx] > 0 && sequenceLastInput[idx] != 0 &&
       now - sequenceLastInput[idx] > SEQUENCE_TIMEOUT_MS) {
     sequenceProgress[idx] = 0;
   }
+  
+  // -----------------------------------------------------
+  // MODE A: ORDERED (Strict 1 -> 2 -> 3)
+  // -----------------------------------------------------
+  if (currentLogicMode == SEQ_LOGIC_ORDERED) {
+    if (sequenceProgress[idx] < expectedLength &&
+        buttonNumber == storedSequences[idx][sequenceProgress[idx]]) {
+      sequenceProgress[idx]++;
+    } else if (buttonNumber == storedSequences[idx][0]) {
+      sequenceProgress[idx] = 1; 
+    } else {
+      sequenceProgress[idx] = 0;
+    }
 
-  if (sequenceProgress[idx] < expectedLength &&
-      buttonNumber == storedSequences[idx][sequenceProgress[idx]]) {
-    sequenceProgress[idx]++;
-  } else if (buttonNumber == storedSequences[idx][0]) {
-    sequenceProgress[idx] = 1;
-  } else {
-    sequenceProgress[idx] = 0;
+    if (sequenceProgress[idx] >= expectedLength) {
+      if (now - lastMoveMs > moveCooldownMs) {
+        buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
+        deliverRewardForSide(panel);
+      }
+      sequenceProgress[idx] = 0;
+    }
+  } 
+  // -----------------------------------------------------
+  // MODE B: ANY SET (Must collect all valid buttons)
+  // -----------------------------------------------------
+  else if (currentLogicMode == SEQ_LOGIC_ANY) {
+    bool isCorrectButton = false;
+    uint8_t targetMask = 0;
+    
+    for(int i=0; i<expectedLength; i++) {
+       uint8_t validBtn = storedSequences[idx][i];
+       if(buttonNumber == validBtn) isCorrectButton = true;
+       targetMask |= (1 << (validBtn - 1));
+    }
+
+    if (isCorrectButton) {
+       sequenceProgress[idx] |= (1 << (buttonNumber - 1));
+    } else {
+       sequenceProgress[idx] = 0; // Wrong button resets progress
+    }
+
+    if (sequenceProgress[idx] == targetMask) {
+       if (now - lastMoveMs > moveCooldownMs) {
+         buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
+         deliverRewardForSide(panel);
+       }
+       sequenceProgress[idx] = 0;
+    }
+  }
+  // -----------------------------------------------------
+  // MODE C: IMMEDIATE (Any valid button triggers reward)
+  // -----------------------------------------------------
+  // -----------------------------------------------------
+  // MODE C: IMMEDIATE (Any valid button triggers reward)
+  // -----------------------------------------------------
+  else {
+    bool isValidTrigger = false;
+    
+    // Check if the button pressed is in the approved list
+    for(int i=0; i<expectedLength; i++) {
+       if (buttonNumber == storedSequences[idx][i]) {
+         isValidTrigger = true;
+         break;
+       }
+    }
+
+    if (isValidTrigger) {
+       // --- NEW LOGIC START ---
+       // If this is Panel 1, we must wait to see if the user is trying to enter the menu
+       if (panel == 1) {
+          // Only start the timer if we aren't already waiting
+          if (panel1DeferredRewardMs == 0) {
+             panel1DeferredRewardMs = now;
+             buzzTest(200, 20); // Tiny "Ack" chirp (optional) to confirm contact
+          }
+       } 
+       // For other panels, dispense immediately as usual
+       else {
+          if (now - lastMoveMs > moveCooldownMs) {
+            buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
+            deliverRewardForSide(panel);
+          }
+       }
+       // --- NEW LOGIC END ---
+    }
   }
 
   sequenceLastInput[idx] = now;
-
-  if (sequenceProgress[idx] >= expectedLength) {
-    if (now - lastMoveMs > moveCooldownMs) {
-      buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
-      deliverRewardForSide(panel);
-    }
-    sequenceProgress[idx] = 0;
-  }
 }
 
 void updateSequenceTimeouts(unsigned long now) {
@@ -2176,26 +2271,52 @@ void updateSequenceTimeouts(unsigned long now) {
 }
 
 void handleMenuActivationHold(unsigned long now) {
-  if (currentMode != MODE_IDLE) {
-    panel1MenuHoldActive = false;
-    menuHoldStart = 0;
-    return;
-  }
-
+  // Check if all 4 buttons are pressed
   if (allPanel1Pressed()) {
+    
+    // If we just started holding, record the time
     if (!panel1MenuHoldActive) {
       panel1MenuHoldActive = true;
       menuHoldStart = now;
+      
+      // Reset sequence tracking so we don't trigger "Immediate Mode" food
       sequenceProgress[0] = 0;
       sequenceLastInput[0] = 0;
-    } else if (now - menuHoldStart >= MENU_HOLD_MS) {
-      enterMenu();
+    } 
+    // If held long enough (3 seconds)
+    else if (now - menuHoldStart >= MENU_HOLD_MS) {
+      
+      if (currentMode == MODE_IDLE) {
+        // IDLE -> ENTER MENU
+        enterMenu();
+      } else {
+        // IN MENU -> SAVE & EXIT
+        saveAndExit();
+      }
     }
   } else {
+    // Buttons released
     panel1MenuHoldActive = false;
     menuHoldStart = 0;
   }
 }
+
+void showMenuShutdownConfirm() {
+  OLED_SELECT();
+  display.clearDisplay();
+  drawStatusHeader(millis());
+  display.setTextSize(1);
+  display.setCursor(0, 10);
+  display.println(F("POWER OFF SYSTEM?"));
+  
+  display.setCursor(0, 30);
+  display.println(F("1. YES (Shutdown)"));
+  
+  display.setCursor(0, 50);
+  display.println(F("2. NO (Cancel)"));
+  display.display();
+}
+
 void showMenuMain() {
   buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
   OLED_SELECT();
@@ -2207,7 +2328,7 @@ void showMenuMain() {
   display.println(F("1. Change Sequences"));
   display.println(F("2. Change Display"));
   display.println(F("3. Options"));
-  display.println(F("4. Exit Menu"));
+  display.println(F("4. POWER OFF")); // Changed from Exit
   display.display();
 }
 void showMenuDisplaySelect() {
@@ -2228,13 +2349,14 @@ void showMenuDisplaySelect() {
 
   // NEW OPTION
   display.setCursor(0, 42);
-  if(currentDisplayMode == DISPLAY_MODE_ACCEL) display.print(F(">"));
-  display.println(F("3. Accel Tune"));
+  if(currentDisplayMode == DISPLAY_MODE_DEPLOY) display.print(F(">"));
+  display.println(F("3. Deployment"));
   
   display.setCursor(0, 56);
   display.println(F("4. Back"));
   display.display();
 }
+
 void showMenuOptions() {
   OLED_SELECT();
   display.clearDisplay();
@@ -2244,9 +2366,15 @@ void showMenuOptions() {
   display.println(F("OPTIONS"));
   
   display.println(F("1. Factory Reset"));
-  // Spacer
+  
   display.print(F("2. Uno R4: "));
   display.println(expectUnoR4 ? F("ON") : F("OFF"));
+
+  // UPDATED DISPLAY LOGIC
+  display.print(F("3. Logic: "));
+  if (currentLogicMode == SEQ_LOGIC_ORDERED) display.println(F("Order"));
+  else if (currentLogicMode == SEQ_LOGIC_ANY) display.println(F("Set"));
+  else display.println(F("1-Shot")); // "1-Shot" implies immediate reward
   
   display.setCursor(0, 55);
   display.println(F("4. Back"));
@@ -2296,82 +2424,13 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         currentMode = MODE_MENU_OPTIONS;
         showMenuOptions();
       } else if (number == 4) {
-        exitMenu();
+        // GO TO SHUTDOWN CONFIRMATION
+        currentMode = MODE_MENU_SHUTDOWN_CONFIRM;
+        showMenuShutdownConfirm();
       }
       break;
 
-    // 1.1 SELECT SIDE (For Sequences)
-    case MODE_MENU_SELECT_SIDE:
-      if (number >= 1 && number <= SIDE_COUNT) {
-        menuSelectedSide = number;
-        resetMenuSequenceBuffer();
-        uint8_t idx = menuSelectedSide - 1;
-        menuSequenceTargetLength = storedSequenceLengths[idx];
-        if (menuSequenceTargetLength < MIN_SEQUENCE_LENGTH ||
-            menuSequenceTargetLength > MAX_SEQUENCE_LENGTH) {
-          menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
-        }
-        currentMode = MODE_MENU_SELECT_LENGTH;
-        showMenuSelectLength();
-      }
-      // Note: No "Back" button defined here because buttons 1-4 are taken by sides.
-      // You could check for a long hold to go back, but for now we follow the simple logic.
-      break;
-
-    case MODE_MENU_SELECT_LENGTH:
-      if (number == 1) {
-        if (menuSequenceTargetLength > MIN_SEQUENCE_LENGTH) {
-          menuSequenceTargetLength--;
-          showMenuSelectLength();
-        }
-      } else if (number == 2) {
-        if (menuSequenceTargetLength < MAX_SEQUENCE_LENGTH) {
-          menuSequenceTargetLength++;
-          showMenuSelectLength();
-        }
-      } else if (number == 3) {
-        resetMenuSequenceBuffer();
-        currentMode = MODE_MENU_ENTER_SEQUENCE;
-        showMenuEnterSequence();
-      } else if (number == 4) {
-        currentMode = MODE_MENU_SELECT_SIDE;
-        menuSelectedSide = 0;
-        menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
-        resetMenuSequenceBuffer();
-        showMenuSelectSide();
-      }
-      break;
-
-    // 1.1.1 ENTER SEQUENCE
-    case MODE_MENU_ENTER_SEQUENCE:
-      if (menuSequenceLength < menuSequenceTargetLength) {
-        menuSequenceBuffer[menuSequenceLength++] = number;
-        showMenuEnterSequence();
-        if (menuSequenceLength >= menuSequenceTargetLength) {
-          currentMode = MODE_MENU_CONFIRM;
-          showMenuConfirm();
-        }
-      }
-      break;
-
-    // 1.1.2 CONFIRM SEQUENCE
-    case MODE_MENU_CONFIRM:
-      if (number == 1) {
-        saveMenuSequence(); // Saves and exits
-      } else if (number == 2) {
-        resetMenuSequenceBuffer();
-        currentMode = MODE_MENU_ENTER_SEQUENCE;
-        showMenuEnterSequence(); // Retry
-      } else if (number == 3) {
-        // Return to Main Menu
-        currentMode = MODE_MENU_MAIN;
-        showMenuMain();
-      } else if (number == 4) {
-        // Return to Side Selection
-        currentMode = MODE_MENU_SELECT_SIDE;
-        showMenuSelectSide();
-      }
-      break;
+    // ... (Keep SELECT_SIDE, SELECT_LENGTH, ENTER_SEQUENCE, CONFIRM as they are) ...
 
     // 2. DISPLAY SELECT
     case MODE_MENU_DISPLAY_SELECT:
@@ -2384,11 +2443,11 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         saveSequencesToEEPROM();
         showMenuDisplaySelect();
       } else if (number == 3) {
-        // NEW OPTION
-        currentDisplayMode = DISPLAY_MODE_ACCEL;
+        currentDisplayMode = DISPLAY_MODE_DEPLOY;
         saveSequencesToEEPROM();
         showMenuDisplaySelect();
       } else if (number == 4) {
+        // BACK TO MAIN
         currentMode = MODE_MENU_MAIN;
         showMenuMain();
       }
@@ -2401,9 +2460,18 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         showMenuResetConfirm();
       } else if (number == 2) {
         expectUnoR4 = !expectUnoR4;
-        saveSequencesToEEPROM(); // Save preference
-        showMenuOptions();       // Update text
+        saveSequencesToEEPROM(); 
+        showMenuOptions();       
+      } else if (number == 3) {
+        // CYCLE LOGIC MODE
+        uint8_t mode = (uint8_t)currentLogicMode;
+        mode++;
+        if (mode > 2) mode = 0;
+        currentLogicMode = (SequenceLogicMode)mode;
+        saveSequencesToEEPROM();
+        showMenuOptions();
       } else if (number == 4) {
+        // BACK TO MAIN
         currentMode = MODE_MENU_MAIN;
         showMenuMain();
       }
@@ -2412,17 +2480,79 @@ void handleButtonPress(uint8_t index, unsigned long now) {
     // 3.1 RESET CONFIRM
     case MODE_MENU_RESET_CONFIRM:
       if (number == 1) {
-        resetToFactoryDefaults(); // Resets and exits
+        resetToFactoryDefaults(); 
       } else {
-        // Any other button cancels back to Options
         currentMode = MODE_MENU_OPTIONS;
         showMenuOptions();
+      }
+      break;
+
+    // 4. SHUTDOWN CONFIRM (New)
+    case MODE_MENU_SHUTDOWN_CONFIRM:
+      if (number == 1) {
+         shutdownInitiated = true;
+         shutdownSequence();
+      } else {
+         currentMode = MODE_MENU_MAIN; // Cancel goes back to Main
+         showMenuMain();
       }
       break;
 
     default:
       break;
   }
+}
+
+void displayDeploymentView(const SensorSnapshot& snapshot, const char* btnLbl) {
+  // We need to know if we showed something last frame so we can clear it
+  static bool screenIsDirty = true; 
+
+  // Check for interesting events
+  bool isPeck   = snapshot.peckActive;
+  bool isButton = (btnLbl[0] != '\0');
+  bool isFood   = foodDeliveredSinceLastLog;
+  
+  bool hasEvent = isPeck || isButton || isFood;
+
+  // 1. If an event is happening, WE MUST DRAW
+  if (hasEvent) {
+    OLED_SELECT();
+    display.clearDisplay();
+    drawStatusHeader(millis()); // Optional: Show battery/temp during events
+
+    display.setTextSize(2);
+    display.setCursor(0, 25);
+    
+    if (isFood) {
+      display.println(F("FEEDING..."));
+    } else if (isButton) {
+      display.print(F("BTN: "));
+      display.println(btnLbl);
+    } else if (isPeck) {
+      display.println(F(">> PECK <<"));
+    }
+    
+    display.display(); // Takes ~40ms, but necessary for info
+    screenIsDirty = true; // Mark that the screen has content
+  }
+  // 2. If NO event, but screen has old junk, CLEAR IT ONCE
+  else if (screenIsDirty) {
+    OLED_SELECT();
+    display.clearDisplay();
+    
+    // Optional: Draw a tiny dot or "Ready" text so you know it's on?
+    // Or leave completely black for "Stealth". Let's do simple text.
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println(F("System Active"));
+    
+    display.display();
+    screenIsDirty = false; // Screen is now "Clean" (mostly empty)
+  }
+  // 3. If NO event and screen is already Clean...
+  // DO NOTHING! Return immediately. 
+  // This saves ~40ms of I2C transfer time, giving it to the Accelerometer.
 }
 
 
@@ -2436,11 +2566,20 @@ void readAndSend() {
   const char* buttonLabel = buttonEventPending ? lastButtonEvent : "";
 
   switch (samplingState) {
+    // -------------------------------------------------------------------
+    // STATE: BASELINING (Initial startup or re-calibration)
+    // -------------------------------------------------------------------
     case STATE_BASELINING:
       recordBaselineSample(snapshot);
       if (baselineStartMs == 0) baselineStartMs = nowMs;
+      
       if (nowMs - baselineStartMs >= BASELINE_DURATION_MS) {
         finalizeBaselineFromAccumulator();
+        
+        // LOGGING: Record that initialization is done and we are sleeping
+        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "Base Done");
+        closeLogFile(); // <--- CRITICAL: Save data and close file
+        
         samplingState = STATE_SLEEPING;
         setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
         stableSinceMs = 0;
@@ -2448,6 +2587,9 @@ void readAndSend() {
       }
       break;
 
+    // -------------------------------------------------------------------
+    // STATE: SLEEPING (Low power, checking for triggers)
+    // -------------------------------------------------------------------
     case STATE_SLEEPING: {
       if (!sessionBaseline.valid) {
         samplingState = STATE_BASELINING;
@@ -2459,6 +2601,8 @@ void readAndSend() {
       }
 
       bool outsideBaseline = !snapshotWithinBaseline(snapshot);
+      
+      // CHECK FOR WAKE UP
       if (outsideBaseline || snapshot.peckActive || buttonEventPending) {
         samplingState = STATE_FAST_SAMPLING;
         setSensorIntervalMs(SENSOR_INTERVAL_FAST_MS);
@@ -2468,44 +2612,63 @@ void readAndSend() {
         
         displayFastSnapshot(snapshot);
         
-        // FIX: Only send to R4 if we are NOT in the menu
         if (currentMode == MODE_IDLE) {
           sendDistancesFramed(snapshot.distances);
         }
         
-        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, "FAST", buttonLabel);
+        // --- LOGGING: DETERMINE WAKE REASON ---
+        const char* wakeReason = "WAKE-SENS"; // Default
+        if (buttonEventPending) wakeReason = "WAKE-BTN";
+        else if (snapshot.peckActive) wakeReason = "WAKE-PECK";
+        
+        // Log the wake event immediately
+        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, wakeReason, buttonLabel);
+        
         foodDeliveredSinceLastLog = false;
         buttonEventPending = false;
         lastSnapshot = snapshot;
       } else {
+        // Still sleeping... 
         showStateBanner(F("Sleep"));
         lastSnapshot = snapshot;
       }
       break;
     }
 
+    // -------------------------------------------------------------------
+    // STATE: FAST (Recording data, interacting)
+    // -------------------------------------------------------------------
     case STATE_FAST_SAMPLING: {
       if (currentDisplayMode == DISPLAY_MODE_SENSORS) {
           displaySensorSnapshot(snapshot);
-      } else if (currentDisplayMode == DISPLAY_MODE_ACCEL) {
-          displayAccelDebug(); // <--- NEW CALL
+      } else if (currentDisplayMode == DISPLAY_MODE_DEPLOY) {
+          // Pass the snapshot and the button label
+          displayDeploymentView(snapshot, buttonLabel); 
       } else {
           displayFastSnapshot(snapshot); // Default Buttons
       }
 
-      // FIX: Only send to R4 if we are NOT in the menu
       if (currentMode == MODE_IDLE) {
         sendDistancesFramed(snapshot.distances);
       }
 
+      // Log "FAST" for continuous recording
       appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, "FAST", buttonLabel);
       foodDeliveredSinceLastLog = false;
       buttonEventPending = false;
 
       bool withinBaseline = snapshotWithinBaseline(snapshot);
+      
+      // CHECK FOR SLEEP TIMEOUT (No activity)
       if (withinBaseline) {
         if (stableSinceMs == 0) stableSinceMs = nowMs;
+        
         if (nowMs - stableSinceMs >= FAST_STABLE_HOLD_MS) {
+          
+          // LOGGING: Record that we are giving up and sleeping
+          appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "No Activity");
+          closeLogFile(); // <--- CRITICAL: Save data and close file
+
           samplingState = STATE_SLEEPING;
           setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
           stableSinceMs = 0;
@@ -2519,8 +2682,14 @@ void readAndSend() {
         lastChangeDuringFastMs = nowMs;
       }
 
+      // CHECK FOR BASELINE REFRESH (Long activity)
       if (nowMs - lastChangeDuringFastMs >= BASELINE_REFRESH_MS) {
         applySnapshotAsBaseline(snapshot);
+        
+        // LOGGING: Record re-baseline and sleep
+        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "New Base");
+        closeLogFile(); // <--- CRITICAL: Save data and close file
+        
         samplingState = STATE_SLEEPING;
         setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
         stableSinceMs = 0;
@@ -2566,7 +2735,8 @@ void shutdownSequence(){
   parkTunnelBetweenSides();
 
   // 4) Flush any SD writes to avoid corruption
-  flushSdCard();
+  // flushSdCard();
+  closeLogFile(); // Saves data and closes properly
 
   // 5) Cut 5V rail to peripherals
   digitalWrite(GATE_5V_PIN, LOW);
@@ -2616,7 +2786,7 @@ void checkSensorHealth(unsigned long now) {
       tcaSelect(SCREEN_CHANNEL);
       display.fillRect(0,0, 10, 10, SSD1306_WHITE); // Flash corner
       display.display();
-      buzzTest(1000, 500); //1khz, 500ms
+      // buzzTest(1000, 500); //1khz, 500ms
 
 
       // 2. Perform Hard Reset via XSHUT
@@ -2640,6 +2810,13 @@ void checkSensorHealth(unsigned long now) {
   }
 }
 
+void closeLogFile() {
+  if (sessionFile) {
+    sessionFile.flush();
+    sessionFile.close();
+    // Serial.println(F("Log file closed."));
+  }
+}
 
 // -------------------- SETUP/LOOP --------------------
 void setup() {
@@ -3012,10 +3189,28 @@ void loop() {
   // If in menu and waiting for release
   if (currentMode != MODE_IDLE && menuAwaitingRelease && allPanel1Released()) {
     menuAwaitingRelease = false;
-    showMenuMain();
+    // showMenuMain();
+    if (currentMode == MODE_MENU_MAIN) showMenuMain();
+  }
+  // ---------------------------------------------------------
+  // CHECK DEFERRED REWARD (Panel 1 "Human Grace Period")
+  // ---------------------------------------------------------
+  if (panel1DeferredRewardMs > 0) {
+    // 1. If user successfully triggered the Menu Hold, CANCEL the reward
+    if (panel1MenuHoldActive) {
+       panel1DeferredRewardMs = 0;
+    }
+    // 2. If 350ms passed and no Menu Hold happened, DELIVER the reward
+    else if (now - panel1DeferredRewardMs > 350) {
+       if (now - lastMoveMs > moveCooldownMs) {
+          buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
+          deliverRewardForSide(1);
+       }
+       panel1DeferredRewardMs = 0; // Reset
+    }
   }
 
-  updateSequenceTimeouts(now);
+  updateSequenceTimeouts(now); // (Existing line)
 
   // Process the actual clicks
   if (pendingEvents) {
@@ -3037,19 +3232,19 @@ void loop() {
   // ---------------------------------------------------------
   // 4. POWER SWITCH LOGIC (Shutdown)
   // ---------------------------------------------------------
-  if (!shutdownInitiated && (now - startupMillis) > SWITCH_STARTUP_GRACE_MS) {
-    // If switch is HIGH, it means it is OPEN (OFF position for active-low switch)
-    if (digitalRead(SWITCH_DETECT_PIN) == HIGH) {
-      if (switchHighStart == 0) {
-        switchHighStart = now;
-      } else if (now - switchHighStart >= SWITCH_DEBOUNCE_DELAY_MS) {
-        shutdownInitiated = true;
-        shutdownSequence();
-      }
-    } else {
-      switchHighStart = 0;
-    }
-  }
+  // if (!shutdownInitiated && (now - startupMillis) > SWITCH_STARTUP_GRACE_MS) {
+  //   // If switch is HIGH, it means it is OPEN (OFF position for active-low switch)
+  //   if (digitalRead(SWITCH_DETECT_PIN) == HIGH) {
+  //     if (switchHighStart == 0) {
+  //       switchHighStart = now;
+  //     } else if (now - switchHighStart >= SWITCH_DEBOUNCE_DELAY_MS) {
+  //       shutdownInitiated = true;
+  //       shutdownSequence();
+  //     }
+  //   } else {
+  //     switchHighStart = 0;
+  //   }
+  // }
 
   // ---------------------------------------------------------
   // 5. SENSOR READS (Low Priority)
