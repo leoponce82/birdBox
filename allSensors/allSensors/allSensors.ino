@@ -119,6 +119,10 @@ const int SEQUENCE_STORAGE_ADDR = 0;
 
 // Timer to defer Panel 1 reward to check for menu entry
 unsigned long panel1DeferredRewardMs = 0;
+// Menu Deferral Logic
+uint8_t deferredMenuBtn = 0;       // Stores the button you pressed (1-4)
+unsigned long deferredMenuTimer = 0; // When did you press it?
+const unsigned long MENU_CLICK_DELAY = 300; // Wait 300ms before acting
 
 // The Main Storage Struct
 struct SequenceStorage {
@@ -2380,36 +2384,8 @@ void showMenuOptions() {
   display.println(F("4. Back"));
   display.display();
 }
-
-void handleButtonPress(uint8_t index, unsigned long now) {
-  uint8_t panel = buttonPanels[index];
-  if (panel == PANEL_UNKNOWN) return;
-  uint8_t number = buttonNumbers[index];
-
-  // --- FAST MODE TRIGGER ---
-  // Any button press wakes the system into fast mode
-  snprintf(lastButtonEvent, sizeof(lastButtonEvent), "P%uB%u", panel, number);
-  buttonEventPending = true;
-  if (samplingState != STATE_FAST_SAMPLING && samplingState != STATE_BASELINING) {
-    samplingState = STATE_FAST_SAMPLING;
-    setSensorIntervalMs(SENSOR_INTERVAL_FAST_MS);
-    stableSinceMs = 0;
-    lastChangeDuringFastMs = now;
-    showStateBanner(F("WAKE UP")); // Brief banner
-  }
-
-  // --- IDLE / SEQUENCE ENTRY ---
-  if (currentMode == MODE_IDLE) {
-    if (panel == 1 && panel1MenuHoldActive) return; // Ignore if holding for menu
-    processSequenceInput(panel, number, now);
-    return;
-  }
-
-  // --- MENU NAVIGATION ---
-  // Only Panel 1 controls the menu
-  if (panel != 1) return;
-  if (menuAwaitingRelease) return;
-
+// This function contains the logic that USED to be in handleButtonPress
+void executeMenuCommand(uint8_t number) {
   switch (currentMode) {
     
     // 1. MAIN MENU
@@ -2424,13 +2400,78 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         currentMode = MODE_MENU_OPTIONS;
         showMenuOptions();
       } else if (number == 4) {
-        // GO TO SHUTDOWN CONFIRMATION
-        currentMode = MODE_MENU_SHUTDOWN_CONFIRM;
-        showMenuShutdownConfirm();
+        exitMenu();
       }
       break;
 
-    // ... (Keep SELECT_SIDE, SELECT_LENGTH, ENTER_SEQUENCE, CONFIRM as they are) ...
+    // 1.1 SELECT SIDE
+    case MODE_MENU_SELECT_SIDE:
+      if (number >= 1 && number <= SIDE_COUNT) {
+        menuSelectedSide = number;
+        resetMenuSequenceBuffer();
+        uint8_t idx = menuSelectedSide - 1;
+        menuSequenceTargetLength = storedSequenceLengths[idx];
+        if (menuSequenceTargetLength < MIN_SEQUENCE_LENGTH ||
+            menuSequenceTargetLength > MAX_SEQUENCE_LENGTH) {
+          menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
+        }
+        currentMode = MODE_MENU_SELECT_LENGTH;
+        showMenuSelectLength();
+      }
+      break;
+
+    case MODE_MENU_SELECT_LENGTH:
+      if (number == 1) {
+        if (menuSequenceTargetLength > MIN_SEQUENCE_LENGTH) {
+          menuSequenceTargetLength--;
+          showMenuSelectLength();
+        }
+      } else if (number == 2) {
+        if (menuSequenceTargetLength < MAX_SEQUENCE_LENGTH) {
+          menuSequenceTargetLength++;
+          showMenuSelectLength();
+        }
+      } else if (number == 3) {
+        resetMenuSequenceBuffer();
+        currentMode = MODE_MENU_ENTER_SEQUENCE;
+        showMenuEnterSequence();
+      } else if (number == 4) {
+        currentMode = MODE_MENU_SELECT_SIDE;
+        menuSelectedSide = 0;
+        menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
+        resetMenuSequenceBuffer();
+        showMenuSelectSide();
+      }
+      break;
+
+    // 1.1.1 ENTER SEQUENCE
+    case MODE_MENU_ENTER_SEQUENCE:
+      if (menuSequenceLength < menuSequenceTargetLength) {
+        menuSequenceBuffer[menuSequenceLength++] = number;
+        showMenuEnterSequence();
+        if (menuSequenceLength >= menuSequenceTargetLength) {
+          currentMode = MODE_MENU_CONFIRM;
+          showMenuConfirm();
+        }
+      }
+      break;
+
+    // 1.1.2 CONFIRM SEQUENCE
+    case MODE_MENU_CONFIRM:
+      if (number == 1) {
+        saveMenuSequence(); 
+      } else if (number == 2) {
+        resetMenuSequenceBuffer();
+        currentMode = MODE_MENU_ENTER_SEQUENCE;
+        showMenuEnterSequence(); 
+      } else if (number == 3) {
+        currentMode = MODE_MENU_MAIN;
+        showMenuMain();
+      } else if (number == 4) {
+        currentMode = MODE_MENU_SELECT_SIDE;
+        showMenuSelectSide();
+      }
+      break;
 
     // 2. DISPLAY SELECT
     case MODE_MENU_DISPLAY_SELECT:
@@ -2447,7 +2488,6 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         saveSequencesToEEPROM();
         showMenuDisplaySelect();
       } else if (number == 4) {
-        // BACK TO MAIN
         currentMode = MODE_MENU_MAIN;
         showMenuMain();
       }
@@ -2463,7 +2503,6 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         saveSequencesToEEPROM(); 
         showMenuOptions();       
       } else if (number == 3) {
-        // CYCLE LOGIC MODE
         uint8_t mode = (uint8_t)currentLogicMode;
         mode++;
         if (mode > 2) mode = 0;
@@ -2471,7 +2510,6 @@ void handleButtonPress(uint8_t index, unsigned long now) {
         saveSequencesToEEPROM();
         showMenuOptions();
       } else if (number == 4) {
-        // BACK TO MAIN
         currentMode = MODE_MENU_MAIN;
         showMenuMain();
       }
@@ -2487,19 +2525,55 @@ void handleButtonPress(uint8_t index, unsigned long now) {
       }
       break;
 
-    // 4. SHUTDOWN CONFIRM (New)
+    // 4. SHUTDOWN CONFIRM
     case MODE_MENU_SHUTDOWN_CONFIRM:
       if (number == 1) {
          shutdownInitiated = true;
          shutdownSequence();
       } else {
-         currentMode = MODE_MENU_MAIN; // Cancel goes back to Main
+         currentMode = MODE_MENU_MAIN; 
          showMenuMain();
       }
       break;
 
     default:
       break;
+  }
+}
+void handleButtonPress(uint8_t index, unsigned long now) {
+  uint8_t panel = buttonPanels[index];
+  if (panel == PANEL_UNKNOWN) return;
+  uint8_t number = buttonNumbers[index];
+
+  // --- FAST MODE TRIGGER (Always Instant) ---
+  snprintf(lastButtonEvent, sizeof(lastButtonEvent), "P%uB%u", panel, number);
+  buttonEventPending = true;
+  if (samplingState != STATE_FAST_SAMPLING && samplingState != STATE_BASELINING) {
+    samplingState = STATE_FAST_SAMPLING;
+    setSensorIntervalMs(SENSOR_INTERVAL_FAST_MS);
+    stableSinceMs = 0;
+    lastChangeDuringFastMs = now;
+    showStateBanner(F("WAKE UP")); 
+  }
+
+  // --- IDLE MODE (Always Instant) ---
+  if (currentMode == MODE_IDLE) {
+    if (panel == 1 && panel1MenuHoldActive) return; 
+    processSequenceInput(panel, number, now);
+    return;
+  }
+
+  // --- MENU NAVIGATION (DEFERRED) ---
+  if (panel != 1) return;
+  if (menuAwaitingRelease) return;
+  
+  // FIX: Don't run switch() here. Store the button and wait.
+  // Only accept the first button pressed in a sequence
+  if (deferredMenuBtn == 0) {
+     deferredMenuBtn = number;
+     deferredMenuTimer = now;
+     // Optional: Small chirp to say "I heard you"
+     // buzzTest(200, 20); 
   }
 }
 
@@ -3185,6 +3259,21 @@ void loop() {
 
   // Handle "Hold Panel 1" logic (Menu entry)
   handleMenuActivationHold(now);
+
+  // ---------------------------------------------------------
+  // CHECK DEFERRED MENU NAVIGATION (Fix for 4-Button Exit)
+  // ---------------------------------------------------------
+  if (deferredMenuBtn > 0) {
+      // 1. If user is holding all buttons (Exit attempt), CANCEL the single press
+      if (allPanel1Pressed() || panel1MenuHoldActive) {
+          deferredMenuBtn = 0; 
+      }
+      // 2. If time passed (300ms) and no Exit attempt, EXECUTE the command
+      else if (now - deferredMenuTimer > MENU_CLICK_DELAY) {
+          executeMenuCommand(deferredMenuBtn);
+          deferredMenuBtn = 0; // Reset
+      }
+  }
 
   // If in menu and waiting for release
   if (currentMode != MODE_IDLE && menuAwaitingRelease && allPanel1Released()) {
