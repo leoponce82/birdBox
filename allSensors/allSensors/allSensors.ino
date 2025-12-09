@@ -1095,6 +1095,8 @@ void appendSessionHeader(DateTime now) {
     return;
   }
 
+  RTC_SELECT();
+
   if (!ensureLogFile(now)) {
     return;
   }
@@ -2756,6 +2758,8 @@ void shutdownSequence(){
   // 3) Park tunnel between sides to sit midway on power-down
   parkTunnelBetweenSides();
 
+  // Flush any pending log data before writing the shutdown banner so it stays last
+  closeLogFile();
   appendShutdownNotice();
   // 4) Flush any SD writes to avoid corruption
   closeLogFile(); // Saves data and closes properly
@@ -2989,8 +2993,10 @@ void setup() {
     delay(1000);
   }
 
-  // RTC_SELECT();
-  // appendSessionHeader(rtc.now());
+  if (sdAvailable) {
+    RTC_SELECT();
+    appendSessionHeader(rtc.now());
+  }
 
 
   // Put all sensors on all channels into reset first
