@@ -2730,7 +2730,6 @@ void drawSleepingBird(int x,int y){
 
 void shutdownSequence(){
   // 1. LOCKOUT WRITES
-  noInterrupts();
   systemActive = false;
 
   
@@ -2770,6 +2769,11 @@ void shutdownSequence(){
 
   // 6) Release power hold – system powers off
   digitalWrite(POWER_HOLD_PIN, LOW);
+
+  // Once peripherals are quiet and the shutdown banner is written, stop
+  // interrupts to prevent any stray ISR from waking hardware back up while
+  // we wait for the power rail to drop.
+  noInterrupts();
 
   // If hardware doesn't cut immediately, wait here
   while(1){}
