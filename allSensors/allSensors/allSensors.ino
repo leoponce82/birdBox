@@ -20,6 +20,11 @@ struct SensorSnapshot;
 // ---------------------------------------------------------
 // 1. GLOBAL SETTINGS & ENUMS (MUST BE AT THE TOP)
 // ---------------------------------------------------------
+
+// --- MODE CONFIGURATION ---
+// Set to 'true' to disable sleep mode entirely (Always Fast Sampling)
+const bool CONSTANT_SAMPLING_MODE = true;
+
 // --- LOGGING GLOBALS ---
 File sessionFile; // Keeps the file open in memory
 unsigned long lastLogSyncMs = 0;
@@ -1048,7 +1053,7 @@ bool ensureLogFile(DateTime now) {
 
     // Write header if new
     if (!fileExists) {
-      sessionFile.print(F("Date, Time"));
+      sessionFile.print(F("Date, Time, Millis"));
       for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
         sessionFile.print(F(", Sensor"));
         sessionFile.print(i + 1);
@@ -1083,14 +1088,19 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   sessionFile.print(':');
   if (timestamp.second() < 10) sessionFile.print('0');
   sessionFile.print(timestamp.second());
+  sessionFile.print(F(", "));
+  sessionFile.print(millis());
 
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
     sessionFile.print(F(", "));
-    if (statuses[i] == 0) {
-      sessionFile.print(distances[i]);
-    } else {
-      sessionFile.print(F("timeout"));
-    }
+    // if (statuses[i] == 0) {
+    //   sessionFile.print(distances[i]);
+    // } else {
+    //   sessionFile.print(F("timeout"));
+    // }
+    sessionFile.print(distances[i]);
+    // Optional: Print error code next to it if you want debugging
+    // if (statuses[i] != 0) { sessionFile.print(F("(Err)")); }
   }
 
   sessionFile.print(F(", "));
@@ -2670,14 +2680,27 @@ void readAndSend() {
       if (nowMs - baselineStartMs >= BASELINE_DURATION_MS) {
         finalizeBaselineFromAccumulator();
         
-        // LOGGING: Record that initialization is done and we are sleeping
-        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "Base Done");
-        closeLogFile(); // <--- CRITICAL: Save data and close file
+        // LOGGING: Record that initialization is done
+        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "INFO", "Base Done");
+        closeLogFile(); 
         
-        samplingState = STATE_SLEEPING;
-        setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
-        stableSinceMs = 0;
-        showStateBanner(F("Sleep"));
+        // --- MODIFIED LOGIC START ---
+        if (CONSTANT_SAMPLING_MODE) {
+           // Skip Sleep -> Go directly to Fast Mode
+           samplingState = STATE_FAST_SAMPLING;
+           setSensorIntervalMs(SENSOR_INTERVAL_FAST_MS);
+           fastModeStartMs = nowMs;
+           stableSinceMs = 0;
+           lastChangeDuringFastMs = nowMs;
+           showStateBanner(F("Always On"));
+        } else {
+           // Normal Behavior -> Go to Sleep
+           samplingState = STATE_SLEEPING;
+           setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
+           stableSinceMs = 0;
+           showStateBanner(F("Sleep"));
+        }
+        // --- MODIFIED LOGIC END ---
       }
       break;
 
@@ -2685,6 +2708,7 @@ void readAndSend() {
     // STATE: SLEEPING (Low power, checking for triggers)
     // -------------------------------------------------------------------
     case STATE_SLEEPING: {
+      // (This state is unreachable if CONSTANT_SAMPLING_MODE is true)
       if (!sessionBaseline.valid) {
         samplingState = STATE_BASELINING;
         resetBaselineAccumulator();
@@ -2710,19 +2734,16 @@ void readAndSend() {
           sendDistancesFramed(snapshot.distances);
         }
         
-        // --- LOGGING: DETERMINE WAKE REASON ---
-        const char* wakeReason = "WAKE-SENS"; // Default
+        const char* wakeReason = "WAKE-SENS"; 
         if (buttonEventPending) wakeReason = "WAKE-BTN";
         else if (snapshot.peckActive) wakeReason = "WAKE-PECK";
         
-        // Log the wake event immediately
         appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, wakeReason, buttonLabel);
         
         foodDeliveredSinceLastLog = false;
         buttonEventPending = false;
         lastSnapshot = snapshot;
       } else {
-        // Still sleeping... 
         showStateBanner(F("Sleep"));
         lastSnapshot = snapshot;
       }
@@ -2736,17 +2757,15 @@ void readAndSend() {
       if (currentDisplayMode == DISPLAY_MODE_SENSORS) {
           displaySensorSnapshot(snapshot);
       } else if (currentDisplayMode == DISPLAY_MODE_DEPLOY) {
-          // Pass the snapshot and the button label
           displayDeploymentView(snapshot, buttonLabel); 
       } else {
-          displayFastSnapshot(snapshot); // Default Buttons
+          displayFastSnapshot(snapshot); 
       }
 
       if (currentMode == MODE_IDLE) {
         sendDistancesFramed(snapshot.distances);
       }
 
-      // Log "FAST" for continuous recording
       appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, "FAST", buttonLabel);
       foodDeliveredSinceLastLog = false;
       buttonEventPending = false;
@@ -2757,17 +2776,20 @@ void readAndSend() {
       if (withinBaseline) {
         if (stableSinceMs == 0) stableSinceMs = nowMs;
         
-        if (nowMs - stableSinceMs >= FAST_STABLE_HOLD_MS) {
+        // --- MODIFIED LOGIC START ---
+        // Only sleep if CONSTANT_SAMPLING_MODE is FALSE
+        if (!CONSTANT_SAMPLING_MODE && (nowMs - stableSinceMs >= FAST_STABLE_HOLD_MS)) {
           
-          // LOGGING: Record that we are giving up and sleeping
           appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "No Activity");
-          closeLogFile(); // <--- CRITICAL: Save data and close file
+          closeLogFile(); 
 
           samplingState = STATE_SLEEPING;
           setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
           stableSinceMs = 0;
           showStateBanner(F("Sleep"));
         }
+        // --- MODIFIED LOGIC END ---
+
       } else {
         stableSinceMs = 0;
       }
@@ -2780,14 +2802,18 @@ void readAndSend() {
       if (nowMs - lastChangeDuringFastMs >= BASELINE_REFRESH_MS) {
         applySnapshotAsBaseline(snapshot);
         
-        // LOGGING: Record re-baseline and sleep
-        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "New Base");
-        closeLogFile(); // <--- CRITICAL: Save data and close file
-        
-        samplingState = STATE_SLEEPING;
-        setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
-        stableSinceMs = 0;
-        showStateBanner(F("New base"));
+        // If constant sampling, just log "New Base" but stay in FAST
+        if (CONSTANT_SAMPLING_MODE) {
+           appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "INFO", "New Base");
+           showStateBanner(F("New base"));
+        } else {
+           appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "New Base");
+           closeLogFile(); 
+           samplingState = STATE_SLEEPING;
+           setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
+           stableSinceMs = 0;
+           showStateBanner(F("New base"));
+        }
       }
 
       lastSnapshot = snapshot;
@@ -2917,7 +2943,7 @@ void setup() {
   // Serial.begin(SERIAL_BAUD);
 
   Wire.begin();
-  Wire.setClock(100000); // keep it conservative and rock solid
+  Wire.setClock(400000); // keep it conservative and rock solid
 
   // Power/Control pins
   pinMode(POWER_HOLD_PIN, OUTPUT);
