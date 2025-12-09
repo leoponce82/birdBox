@@ -23,30 +23,28 @@ struct SensorSnapshot;
 // --- LOGGING GLOBALS ---
 File sessionFile; // Keeps the file open in memory
 unsigned long lastLogSyncMs = 0;
-const unsigned long LOG_SYNC_INTERVAL_MS = 2000; // Physically save to SD every 2 seconds
+const unsigned long LOG_SYNC_INTERVAL_MS = 2000; 
 
 // Flag to control whether the Uno R4 connection is expected/required
 bool expectUnoR4 = false;
 
-// New Enum for the Fast Mode Display Preference
+// Display Modes
 enum FastDisplayMode {
   DISPLAY_MODE_BUTTONS, // 0: The dot matrix view
   DISPLAY_MODE_SENSORS, // 1: The text values view
-  DISPLAY_MODE_DEPLOY   // 2: Deployment / Stealth Mode (Only updates on events)
+  DISPLAY_MODE_DEPLOY   // 2: Deployment / Stealth Mode
 };
 
-// GLOBAL VARIABLE: Defines what we see on screen. 
-// Defined HERE so the Storage functions below can see it.
-FastDisplayMode currentDisplayMode = DISPLAY_MODE_BUTTONS; 
-// --- NEW: SEQUENCE LOGIC MODE ---
-// --- SEQUENCE LOGIC MODE ---
+// Sequence Logic Modes
 enum SequenceLogicMode {
   SEQ_LOGIC_ORDERED,   // 0: Must press 1 -> 2 -> 3
-  SEQ_LOGIC_ANY,       // 1: Press 1, 2, 3 in any order (Collection)
-  SEQ_LOGIC_IMMEDIATE  // 2: NEW: Pressing 1 OR 2 OR 3 gives reward instantly
+  SEQ_LOGIC_ANY,       // 1: Press 1, 2, 3 in any order
+  SEQ_LOGIC_IMMEDIATE  // 2: Pressing 1 OR 2 OR 3 gives reward
 };
-// Default to old behavior
-SequenceLogicMode currentLogicMode = SEQ_LOGIC_ORDERED;
+
+// --- DEFAULTS ---
+FastDisplayMode currentDisplayMode = DISPLAY_MODE_BUTTONS; 
+SequenceLogicMode currentLogicMode = SEQ_LOGIC_IMMEDIATE; // <--- CHANGED DEFAULT TO 1-SHOT
 
 const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; 
 
@@ -96,7 +94,6 @@ static unsigned long lastOledFrame = 0;
 // 2. STORAGE STRUCTURES & FUNCTIONS
 // ---------------------------------------------------------
 
-// Forward declare helper function needed by saveSequences
 void buzzTest(uint16_t freqHz = BUZZER_TEST_FREQ_HZ, uint16_t durationMs = BUZZER_TONE_DURATION_MS);
 
 // Constants
@@ -114,15 +111,13 @@ uint8_t currentTunnelSide = 1;
 
 const uint8_t DEFAULT_SEQUENCE_TEMPLATE[DEFAULT_SEQUENCE_LENGTH] = {1, 2, 3, 4};
 const uint32_t SEQUENCE_STORAGE_MAGIC = 0xB105EED1;
-const uint8_t SEQUENCE_STORAGE_VERSION = 5;
+const uint8_t SEQUENCE_STORAGE_VERSION = 6; // <--- INCREMENTED TO FORCE RESET
 const int SEQUENCE_STORAGE_ADDR = 0;
 
-// Timer to defer Panel 1 reward to check for menu entry
 unsigned long panel1DeferredRewardMs = 0;
-// Menu Deferral Logic
-uint8_t deferredMenuBtn = 0;       // Stores the button you pressed (1-4)
-unsigned long deferredMenuTimer = 0; // When did you press it?
-const unsigned long MENU_CLICK_DELAY = 300; // Wait 300ms before acting
+uint8_t deferredMenuBtn = 0;       
+unsigned long deferredMenuTimer = 0; 
+const unsigned long MENU_CLICK_DELAY = 300; 
 
 // The Main Storage Struct
 struct SequenceStorage {
@@ -130,7 +125,7 @@ struct SequenceStorage {
   uint8_t version;
   uint8_t expectUnoR4Enabled;
   uint8_t fastDisplayMode;
-  uint8_t logicMode; // <--- NEW FIELD (0=Ordered, 1=Any)
+  uint8_t logicMode; 
   uint8_t lengths[SIDE_COUNT];
   uint8_t sequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
   uint8_t checksum;
@@ -144,7 +139,7 @@ struct SequenceStorage {
     sum += version;
     sum += expectUnoR4Enabled;
     sum += fastDisplayMode; 
-    sum += logicMode; // Add to checksum
+    sum += logicMode; 
     for (uint8_t side = 0; side < SIDE_COUNT; side++) {
       sum += lengths[side];
       for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
@@ -174,8 +169,9 @@ void applyDefaultSequences() {
     }
   }
   resetSequenceTracking();
-  expectUnoR4 = false; // Default off
-  currentDisplayMode = DISPLAY_MODE_BUTTONS; // Default mode
+  expectUnoR4 = false; 
+  currentDisplayMode = DISPLAY_MODE_BUTTONS;
+  currentLogicMode = SEQ_LOGIC_IMMEDIATE; // <--- CHANGED DEFAULT TO 1-SHOT
 }
 
 void saveSequencesToEEPROM() {
@@ -184,7 +180,7 @@ void saveSequencesToEEPROM() {
   data.version = SEQUENCE_STORAGE_VERSION;
   data.expectUnoR4Enabled = expectUnoR4 ? 1 : 0;
   data.fastDisplayMode = (uint8_t)currentDisplayMode; 
-  data.logicMode = (uint8_t)currentLogicMode; // <--- SAVE MODE
+  data.logicMode = (uint8_t)currentLogicMode; 
 
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
     data.lengths[side] = storedSequenceLengths[side];
@@ -202,6 +198,7 @@ void loadSequencesFromEEPROM() {
   uint32_t magic = 0;
   EEPROM.get(SEQUENCE_STORAGE_ADDR, magic);
 
+  // If magic is wrong, reset everything
   if (magic != SEQUENCE_STORAGE_MAGIC) {
     applyDefaultSequences();
     saveSequencesToEEPROM();
@@ -211,6 +208,7 @@ void loadSequencesFromEEPROM() {
   uint8_t version = 0;
   EEPROM.get(SEQUENCE_STORAGE_ADDR + sizeof(uint32_t), version);
 
+  // If version matches, load the new struct
   if (version == SEQUENCE_STORAGE_VERSION) {
     SequenceStorage data;
     EEPROM.get(SEQUENCE_STORAGE_ADDR, data);
@@ -224,7 +222,7 @@ void loadSequencesFromEEPROM() {
 
       // LOAD LOGIC MODE
       uint8_t lMode = data.logicMode;
-      if (lMode > 1) lMode = 0;
+      if (lMode > 2) lMode = 0;
       currentLogicMode = (SequenceLogicMode)lMode;
 
       for (uint8_t side = 0; side < SIDE_COUNT; side++) {
@@ -238,7 +236,7 @@ void loadSequencesFromEEPROM() {
     }
   }
 
-  // Fallback for older versions
+  // Version mismatch (Old version) -> Reset to defaults
   applyDefaultSequences();
   saveSequencesToEEPROM();
 }
