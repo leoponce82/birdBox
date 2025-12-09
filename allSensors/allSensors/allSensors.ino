@@ -1095,6 +1095,8 @@ void appendSessionHeader(DateTime now) {
     return;
   }
 
+  RTC_SELECT();
+
   if (!ensureLogFile(now)) {
     return;
   }
@@ -2728,7 +2730,6 @@ void drawSleepingBird(int x,int y){
 
 void shutdownSequence(){
   // 1. LOCKOUT WRITES
-  noInterrupts();
   systemActive = false;
 
   
@@ -2756,6 +2757,8 @@ void shutdownSequence(){
   // 3) Park tunnel between sides to sit midway on power-down
   parkTunnelBetweenSides();
 
+  // Flush any pending log data before writing the shutdown banner so it stays last
+  closeLogFile();
   appendShutdownNotice();
   // 4) Flush any SD writes to avoid corruption
   closeLogFile(); // Saves data and closes properly
@@ -2766,6 +2769,11 @@ void shutdownSequence(){
 
   // 6) Release power hold – system powers off
   digitalWrite(POWER_HOLD_PIN, LOW);
+
+  // Once peripherals are quiet and the shutdown banner is written, stop
+  // interrupts to prevent any stray ISR from waking hardware back up while
+  // we wait for the power rail to drop.
+  noInterrupts();
 
   // If hardware doesn't cut immediately, wait here
   while(1){}
@@ -2989,8 +2997,10 @@ void setup() {
     delay(1000);
   }
 
-  // RTC_SELECT();
-  // appendSessionHeader(rtc.now());
+  if (sdAvailable) {
+    RTC_SELECT();
+    appendSessionHeader(rtc.now());
+  }
 
 
   // Put all sensors on all channels into reset first
