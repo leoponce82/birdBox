@@ -25,6 +25,9 @@ struct SensorSnapshot;
 // Set to 'true' to disable sleep mode entirely (Always Fast Sampling)
 const bool CONSTANT_SAMPLING_MODE = true;
 
+// SAFETY: Prevent writes during shutdown
+volatile bool systemActive = true;
+
 // --- LOGGING GLOBALS ---
 File sessionFile; // Keeps the file open in memory
 unsigned long lastLogSyncMs = 0;
@@ -758,41 +761,7 @@ void motorStep(int steps, bool dirCW) {
   tunnelStepper.runToPosition();
 }
 
-void motorStepFood(int steps, bool dirCW, bool disableAfter = true) {
-  foodStepper.enableOutputs();
-  foodStepper.setMaxSpeed(FOOD_MAX_SPEED_STEPS_S);
-  foodStepper.setAcceleration(FOOD_ACCEL_STEPS_S2);
-  foodStepper.setCurrentPosition(0);
-  foodStepper.moveTo(dirCW ? steps : -steps);
-  while (foodStepper.distanceToGo() != 0) {
-    foodStepper.run();
-  }
 
-  if (disableAfter) {
-    foodStepper.disableOutputs();
-  }
-}
-
-void vibrateTunnel(unsigned long durationMs) {
-  const int amplitudeSteps = ALIGNMENT_OVERSHOOT_STEPS;
-  unsigned long start = millis();
-  bool dirCW = true;
-
-  tunnelStepper.enableOutputs();
-  tunnelStepper.setCurrentPosition(0);
-
-  while (millis() - start < durationMs) {
-    long target = dirCW ? amplitudeSteps : -amplitudeSteps;
-    tunnelStepper.moveTo(target);
-    while (tunnelStepper.distanceToGo() != 0 && millis() - start < durationMs) {
-      tunnelStepper.run();
-    }
-    dirCW = !dirCW;
-  }
-
-  tunnelStepper.stop();
-  tunnelStepper.setCurrentPosition(0);
-}
 
 bool isSideAligned(uint8_t side) {
   if (side < 1 || side > SIDE_COUNT) return false;
@@ -933,59 +902,6 @@ bool connectUnoR4() {
 }
 
 
-
-// Sends header + 12 uint16_t as little-endian (lo,hi)
-bool sendDistancesToR4(const uint16_t *vals, uint8_t count) {
-  if (!expectUnoR4) {
-    return true;
-  }
-  UNO_R4_SELECT();
-  delay(3); // TCA settle
-
-  Wire.beginTransmission(UNO_R4_ADDR);
-  for (uint8_t i = 0; i < count; i++) {
-    uint16_t v = vals[i];
-    Wire.write((uint8_t)(v & 0xFF));        // low byte
-    Wire.write((uint8_t)((v >> 8) & 0xFF)); // high byte
-  }
-  uint8_t err = Wire.endTransmission();
-  if (err != 0 && expectUnoR4) {
-    OLED_SELECT();
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(12, 10);
-    display.println(F("No"));
-    display.setCursor(12, 32);
-    display.println(F("send:("));
-    display.display();
-    delay(1000); // show it briefly
-  }
-  return (err == 0);
-}
-bool sendDistancesToR4_chunked(const uint16_t* vals) {
-  if (!expectUnoR4) {
-    return true;
-  }
-  for (uint8_t off = 0; off < SENSOR_COUNT; off += 6) { // 6 values = 12 bytes
-    UNO_R4_SELECT();
-    delay(3);
-
-    Wire.beginTransmission(UNO_R4_ADDR);
-    for (uint8_t i = 0; i < 6; i++) {
-      uint16_t v = vals[off + i];
-      Wire.write((uint8_t)(v & 0xFF));
-      Wire.write((uint8_t)(v >> 8));
-    }
-    uint8_t err = Wire.endTransmission();
-    if (err && expectUnoR4) {
-      // show err on OLED if you want
-      return false;
-    }
-    delayMicroseconds(200); // tiny gap
-  }
-  return true;
-}
-
 // Send distances in framed chunks (4 values per frame)
 // Send distances in framed chunks (4 values per frame)
 bool sendDistancesFramed(const uint16_t *vals) {
@@ -1068,10 +984,11 @@ bool ensureLogFile(DateTime now) {
 }
 
 void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses, bool peckActive, bool foodDelivered = false, const char* stateLabel = "", const char* buttonLabel = "") {
+  if (!systemActive) return; // Safety Lock
   if (!sdAvailable) return;
-  if (!ensureLogFile(timestamp)) return; // Ensures sessionFile is valid
+  if (!ensureLogFile(timestamp)) return; 
 
-  // --- FAST WRITE TO RAM ---
+  // --- DATE ---
   sessionFile.print(timestamp.year());
   sessionFile.print('-');
   if (timestamp.month() < 10) sessionFile.print('0');
@@ -1080,6 +997,8 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   if (timestamp.day() < 10) sessionFile.print('0');
   sessionFile.print(timestamp.day());
   sessionFile.print(F(", "));
+  
+  // --- TIME (HH:MM:SS:mmm) ---
   if (timestamp.hour() < 10) sessionFile.print('0');
   sessionFile.print(timestamp.hour());
   sessionFile.print(':');
@@ -1088,25 +1007,22 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   sessionFile.print(':');
   if (timestamp.second() < 10) sessionFile.print('0');
   sessionFile.print(timestamp.second());
-  sessionFile.print(F(", "));
-  sessionFile.print(millis());
+  
+  // Milliseconds
+  sessionFile.print(':');
+  unsigned long ms = millis() % 1000;
+  if (ms < 100) sessionFile.print('0');
+  if (ms < 10)  sessionFile.print('0');
+  sessionFile.print(ms);
 
+  // --- SENSORS ---
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
     sessionFile.print(F(", "));
-    // if (statuses[i] == 0) {
-    //   sessionFile.print(distances[i]);
-    // } else {
-    //   sessionFile.print(F("timeout"));
-    // }
-    sessionFile.print(distances[i]);
-    // Optional: Print error code next to it if you want debugging
-    // if (statuses[i] != 0) { sessionFile.print(F("(Err)")); }
+    sessionFile.print(distances[i]); 
   }
 
-  sessionFile.print(F(", "));
-  if (isnan(lastTempC)) sessionFile.print(F("n/a")); else sessionFile.print(lastTempC, 2);
-  sessionFile.print(F(", "));
-  if (isnan(lastHumidity)) sessionFile.print(F("n/a")); else sessionFile.print(lastHumidity, 2);
+  // --- REMOVED TEMP/HUM COLUMNS (Optimized) ---
+  // sessionFile.print(F(", ")); ...
 
   sessionFile.print(F(", "));
   sessionFile.print(peckActive ? F("yes") : F("no"));
@@ -1117,14 +1033,61 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   sessionFile.print(F(", "));
   sessionFile.println(buttonLabel);
 
-  // --- LAZY FLUSH STRATEGY ---
-  // Only physically write to card if:
-  // 1. Time interval passed (2 seconds)
-  // 2. OR Important event happened (Food / Button) - We don't want to lose these on power loss
+  // Lazy Flush
   if ((millis() - lastLogSyncMs > LOG_SYNC_INTERVAL_MS) || foodDelivered || (buttonLabel[0] != '\0')) {
-     sessionFile.flush(); // This is the slow part (20-40ms)
+     sessionFile.flush(); 
      lastLogSyncMs = millis();
   }
+}
+
+void appendStartupNotice() {
+  if (!sdAvailable) return;
+  RTC_SELECT();
+  DateTime now = rtc.now();
+  if (!ensureLogFile(now)) return;
+
+  File file = SD.open(currentLogFilename, FILE_WRITE);
+  if (!file) return;
+
+  file.println();
+  file.print(F("=== SESSION START: "));
+  file.print(now.year());
+  file.print('-');
+  file.print(now.month());
+  file.print('-');
+  file.print(now.day());
+  file.println(F(" ==="));
+  
+  // Battery
+  float voltage = readBatteryVoltage();
+  int percent = batteryPercentFromVoltage(voltage);
+  file.print(F("# Battery: "));
+  file.print(voltage, 2);
+  file.print(F("V ("));
+  file.print(percent);
+  file.println(F("%)"));
+
+  // Environment (Inline read)
+  if (ahtReady) {
+    sensors_event_t humidity, temp;
+    aht20.getEvent(&humidity, &temp);
+    file.print(F("# Environment: "));
+    file.print(temp.temperature);
+    file.print(F("C, "));
+    file.print(humidity.relative_humidity);
+    file.println(F("%"));
+  }
+
+  // Header Row for CSV data
+  file.print(F("Date, Time"));
+  for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+    file.print(F(", S")); file.print(i + 1);
+  }
+  file.print(F(", Peck, Food, State, Button"));
+  file.println();
+
+  file.flush();
+  file.close();
 }
 
 void appendSessionHeader(DateTime now) {
@@ -1208,37 +1171,7 @@ void appendShutdownNotice() {
   file.close();
 }
 
-void flushSdCard() {
-  if (!sdAvailable || currentLogFilename[0] == '\0') {
-    return;
-  }
 
-  File file = SD.open(currentLogFilename, FILE_WRITE);
-  if (file) {
-    file.flush();
-    file.close();
-  }
-}
-
-// void scanButtons() {
-//   unsigned long now = millis();
-//   uint8_t portValues[BUTTON_PORT_COUNT];
-
-//   for (uint8_t group = 0; group < BUTTON_PORT_COUNT; group++) {
-//     volatile uint8_t *portReg = buttonPortInputRegs[group];
-//     portValues[group] = portReg ? *portReg : 0xFF;
-//   }
-
-//   for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
-//     uint8_t group = buttonPortGroup[i];
-//     uint8_t newState = (portValues[group] & buttonBitMask[i]) ? HIGH : LOW;
-//     if (newState != buttonRawState[i]) {
-//       buttonRawState[i] = newState;
-//       buttonLastChange[i] = now;
-//       buttonPendingMask |= (uint16_t)1 << i;
-//     }
-//   }
-// }
 
 // Update this function to accept 'now' as an argument
 void scanButtons(unsigned long now) {
@@ -1351,60 +1284,31 @@ void showShutdownBatteryWarnings() {
   }
 }
 
-void drawBatteryStatus(unsigned long nowMs) {
-  float voltage = readBatteryVoltage();
-  int percent = batteryPercentFromVoltage(voltage);
-  bool chargerConnected = isChargerConnected();
 
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.fillRect(0, 0, SCREEN_WIDTH, 10, SSD1306_BLACK);
 
-  if (shouldShowBatteryIndicator(percent, nowMs)) {
-    const uint8_t iconW = 16;
-    const uint8_t iconH = 8;
-    const uint8_t iconX = 0;  // anchor at the left edge
-    const uint8_t iconY = 0;
-
-    display.drawRect(iconX, iconY, iconW, iconH, SSD1306_WHITE);
-    display.fillRect(iconX + iconW, iconY + 2, 2, iconH - 4, SSD1306_WHITE);
-
-    int cappedPercent = percent;
-    if (cappedPercent < 0) cappedPercent = 0;
-    if (cappedPercent > 100) cappedPercent = 100;
-
-    const uint8_t fillMaxW = iconW - 2;
-    uint8_t fillW = (uint8_t)(fillMaxW * cappedPercent / 100.0f);
-    bool showFill = !chargerConnected || ((nowMs / 500) % 2 == 0);
-    if (showFill && fillW > 0) {
-      display.fillRect(iconX + 1, iconY + 1, fillW, iconH - 2, SSD1306_WHITE);
-    }
-
-    display.setCursor(20, 0);
-    display.print(percent);
-    display.print(F("% "));
-    display.print(voltage, 1);
-    display.print(F("V"));
-
-  }
-}
-
-void updateEnvironmentReadings(unsigned long nowMs) {
+void logEnvironmentSnapshot() {
   if (!ahtReady) return;
-  if (nowMs - lastAhtReadMs < AHT_READ_INTERVAL_MS) return;
-  lastAhtReadMs = nowMs;
-
+  
   RTC_SELECT();
-  sensors_event_t humidityEvent, tempEvent;
-  aht20.getEvent(&humidityEvent, &tempEvent);
+  sensors_event_t humidity, temp;
+  aht20.getEvent(&humidity, &temp);
 
-  if (!isnan(tempEvent.temperature)) {
-    lastTempC = tempEvent.temperature;
-  }
-  if (!isnan(humidityEvent.relative_humidity)) {
-    lastHumidity = humidityEvent.relative_humidity;
+  if (!sdAvailable) return;
+  if (!ensureLogFile(rtc.now())) return;
+
+  File file = SD.open(currentLogFilename, FILE_WRITE);
+  if (file) {
+    file.print(F("# ENV: Temp="));
+    file.print(temp.temperature);
+    file.print(F("C, Hum="));
+    file.print(humidity.relative_humidity);
+    file.println(F("%"));
+    file.flush();
+    file.close();
   }
 }
+
+
 
 float updatePeckDetection(unsigned long nowMs, bool allowDetect) {
   if (!accelReady) return 0.0f;
@@ -1597,7 +1501,6 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
   snapshot.timestamp = rtc.now();
 
   // 2. READ DISTANCE SENSORS (Throttled)
-  // Only poll sensors if enough time has passed (e.g. 25ms to allow processing)
   static unsigned long lastSensorPollMs = 0;
   unsigned long nowMs = millis();
   
@@ -1613,9 +1516,19 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
 
         if (sensors[idx].dataReady()) { 
             sensors[idx].read();
-            latestDistances[idx] = sensors[idx].ranging_data.range_mm;
-            latestStatuses[idx]  = sensors[idx].ranging_data.range_status;
-            lastSensorUpdate[idx] = nowMs; // Feed watchdog
+            uint16_t rawDistance = sensors[idx].ranging_data.range_mm;
+            uint8_t rawStatus = sensors[idx].ranging_data.range_status;
+            
+            if (rawStatus == 0) {
+               if (latestDistances[idx] == 0) latestDistances[idx] = rawDistance;
+               else {
+                   // Simple Filter
+                   uint32_t smooth = (rawDistance + ((uint32_t)latestDistances[idx] * 3));
+                   latestDistances[idx] = (uint16_t)(smooth >> 2);
+               }
+            }
+            latestStatuses[idx]  = rawStatus;
+            lastSensorUpdate[idx] = nowMs; 
         }
       }
     }
@@ -1628,13 +1541,13 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
   }
 
   // 4. GET ENVIRONMENT
-  updateEnvironmentReadings(nowMs);
-  snapshot.tempC = lastTempC;
-  snapshot.humidity = lastHumidity;
+  // --- REMOVED to save time during loop ---
+  // updateEnvironmentReadings(nowMs); 
+  snapshot.tempC = NAN;    // Filler data
+  snapshot.humidity = NAN; // Filler data
 
-  // 5. GET ACCEL DATA FROM GLOBAL VARS (Updated by main loop now)
-  // We just read the values the main loop has been updating
-  snapshot.accelMag = vizPeakX; // Or whichever metric you want to log
+  // 5. GET ACCEL DATA
+  snapshot.accelMag = vizPeakX; 
   snapshot.peckActive = peckDetectedRecently(nowMs);
   
   return true;
@@ -1802,22 +1715,7 @@ void displaySensorSnapshot(const SensorSnapshot& snapshot) {
 }
 
 
-void drawPeckIndicator(unsigned long nowMs) {
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.fillRect(118, 0, 10, 10, SSD1306_BLACK);
 
-  // Check if a peck is currently active OR if one is pending display
-  if (accelReady && (peckDetectedRecently(nowMs) || visualPeckPending)) {
-    
-    const uint8_t x = 120;
-    const uint8_t y = 1;
-    display.fillTriangle(x, y + 6, x + 6, y + 6, x + 3, y, SSD1306_WHITE);
-    
-    // Clear the latch now that we have drawn it
-    visualPeckPending = false; 
-  }
-}
 
 // --- VISUALIZATION HELPERS ---
 
@@ -2829,7 +2727,11 @@ void drawSleepingBird(int x,int y){
 }
 
 void shutdownSequence(){
-  appendShutdownNotice();
+  // 1. LOCKOUT WRITES
+  noInterrupts();
+  systemActive = false;
+
+  
   showShutdownBatteryWarnings();
 
   // 1) Say good night
@@ -2854,8 +2756,8 @@ void shutdownSequence(){
   // 3) Park tunnel between sides to sit midway on power-down
   parkTunnelBetweenSides();
 
+  appendShutdownNotice();
   // 4) Flush any SD writes to avoid corruption
-  // flushSdCard();
   closeLogFile(); // Saves data and closes properly
 
   // 5) Cut 5V rail to peripherals
@@ -3087,8 +2989,9 @@ void setup() {
     delay(1000);
   }
 
-  RTC_SELECT();
-  appendSessionHeader(rtc.now());
+  // RTC_SELECT();
+  // appendSessionHeader(rtc.now());
+
 
   // Put all sensors on all channels into reset first
   for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
@@ -3141,6 +3044,10 @@ void setup() {
   display.println(F("birdBox GO"));
   display.display();
   delay(1000);
+
+
+  systemActive = true; // Enable logging
+  appendStartupNotice();
 
   forcePrimingRead(); 
   // Initialize watchdog timers
