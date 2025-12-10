@@ -20,6 +20,11 @@ struct SensorSnapshot;
 // ---------------------------------------------------------
 // 1. GLOBAL SETTINGS & ENUMS (MUST BE AT THE TOP)
 // ---------------------------------------------------------
+// Independent Logging Rate (10Hz)
+const unsigned long LOG_INTERVAL_MS = 100;
+// --- TIME SYNC GLOBALS ---
+DateTime anchorTime;           // The time when the last second flipped
+unsigned long anchorMillis = 0; // The millis() value at that exact moment
 
 // --- MODE CONFIGURATION ---
 // Set to 'true' to disable sleep mode entirely (Always Fast Sampling)
@@ -123,6 +128,8 @@ const uint32_t SEQUENCE_STORAGE_MAGIC = 0xB105EED1;
 const uint8_t SEQUENCE_STORAGE_VERSION = 7; // <--- INCREMENTED TO FORCE RESET
 const int SEQUENCE_STORAGE_ADDR = 0;
 
+// Timer to defer Peck reward to check for human interaction
+unsigned long peckDeferredRewardMs = 0;
 unsigned long panel1DeferredRewardMs = 0;
 uint8_t deferredMenuBtn = 0;       
 unsigned long deferredMenuTimer = 0; 
@@ -987,11 +994,21 @@ bool ensureLogFile(DateTime now) {
 }
 
 void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses, bool peckActive, bool foodDelivered = false, const char* stateLabel = "", const char* buttonLabel = "") {
-  if (!systemActive) return; // Safety Lock
+  if (!systemActive) return; 
   if (!sdAvailable) return;
   if (!ensureLogFile(timestamp)) return; 
 
-  // --- DATE ---
+  // --- RE-CALCULATE MILLIS BASED ON ANCHOR ---
+  // This ensures the Millis align perfectly with the Seconds
+  unsigned long currentMillis = millis();
+  unsigned long elapsed = currentMillis - anchorMillis;
+  
+  // If the elapsed time is > 1000ms (e.g. RTC hasn't ticked yet, but millis has),
+  // the timestamp passed in (from captureSensorSnapshot) has ALREADY been adjusted 
+  // by TimeSpan, so we just need the remainder for the milliseconds column.
+  uint16_t displayMillis = elapsed % 1000;
+
+  // --- WRITE LOG ---
   sessionFile.print(timestamp.year());
   sessionFile.print('-');
   if (timestamp.month() < 10) sessionFile.print('0');
@@ -1001,7 +1018,7 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   sessionFile.print(timestamp.day());
   sessionFile.print(F(", "));
   
-  // --- TIME (HH:MM:SS:mmm) ---
+  // HH:MM:SS
   if (timestamp.hour() < 10) sessionFile.print('0');
   sessionFile.print(timestamp.hour());
   sessionFile.print(':');
@@ -1011,22 +1028,19 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   if (timestamp.second() < 10) sessionFile.print('0');
   sessionFile.print(timestamp.second());
   
-  // Milliseconds
+  // :mmm (Milliseconds)
   sessionFile.print(':');
-  unsigned long ms = millis() % 1000;
-  if (ms < 100) sessionFile.print('0');
-  if (ms < 10)  sessionFile.print('0');
-  sessionFile.print(ms);
+  if (displayMillis < 100) sessionFile.print('0');
+  if (displayMillis < 10)  sessionFile.print('0');
+  sessionFile.print(displayMillis);
 
-  // --- SENSORS ---
+  // ... (Rest of the sensor logging loop remains the same) ...
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
     sessionFile.print(F(", "));
     sessionFile.print(distances[i]); 
   }
-
-  // --- REMOVED TEMP/HUM COLUMNS (Optimized) ---
-  // sessionFile.print(F(", ")); ...
-
+  
+  // ... (Rest of footer logic) ...
   sessionFile.print(F(", "));
   sessionFile.print(peckActive ? F("yes") : F("no"));
   sessionFile.print(F(", "));
@@ -1036,7 +1050,6 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   sessionFile.print(F(", "));
   sessionFile.println(buttonLabel);
 
-  // Lazy Flush
   if ((millis() - lastLogSyncMs > LOG_SYNC_INTERVAL_MS) || foodDelivered || (buttonLabel[0] != '\0')) {
      sessionFile.flush(); 
      lastLogSyncMs = millis();
@@ -1461,18 +1474,16 @@ void runHighSpeedAccelCheck() {
   updatePeckDetection(now, allowDetect);
 }
 
-bool captureSensorSnapshot(SensorSnapshot& snapshot) {
-  // 1. UPDATE TIME
+bool captureSensorSnapshot(SensorSnapshot& snapshot, bool readDistanceSensors) {
+  // 1. UPDATE TIME (Always)
   RTC_SELECT();
-  snapshot.timestamp = rtc.now();
+  syncClock(); // Update Anchor
+  unsigned long currentMs = millis();
+  unsigned long offset = currentMs - anchorMillis;
+  snapshot.timestamp = anchorTime + TimeSpan(offset / 1000); 
 
-  // 2. READ DISTANCE SENSORS (Throttled)
-  static unsigned long lastSensorPollMs = 0;
-  unsigned long nowMs = millis();
-  
-  if (nowMs - lastSensorPollMs >= 25) {
-    lastSensorPollMs = nowMs;
-
+  // 2. READ DISTANCE SENSORS (Conditional)
+  if (readDistanceSensors) {
     for (uint8_t ch = 0; ch < SENSOR_CHANNELS; ch++) {
       tcaSelect(ch);
       delayMicroseconds(10); 
@@ -1480,6 +1491,7 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
       for (uint8_t i = 0; i < SENSORS_PER_CHANNEL; i++) {
         uint8_t idx = ch * SENSORS_PER_CHANNEL + i;
 
+        // Try to read. If not ready, we just keep the old value (Zero-order hold)
         if (sensors[idx].dataReady()) { 
             sensors[idx].read();
             uint16_t rawDistance = sensors[idx].ranging_data.range_mm;
@@ -1494,27 +1506,23 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot) {
                }
             }
             latestStatuses[idx]  = rawStatus;
-            lastSensorUpdate[idx] = nowMs; 
+            lastSensorUpdate[idx] = currentMs; 
         }
       }
     }
   }
 
-  // 3. FILL SNAPSHOT
+  // 3. FILL SNAPSHOT (Always from Memory)
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
     snapshot.distances[i] = latestDistances[i];
     snapshot.statuses[i]  = latestStatuses[i];
   }
 
-  // 4. GET ENVIRONMENT
-  // --- REMOVED to save time during loop ---
-  // updateEnvironmentReadings(nowMs); 
-  snapshot.tempC = NAN;    // Filler data
-  snapshot.humidity = NAN; // Filler data
-
-  // 5. GET ACCEL DATA
+  // 4. ENV & ACCEL (Always from Memory/Globals)
+  snapshot.tempC = NAN;    
+  snapshot.humidity = NAN; 
   snapshot.accelMag = vizPeakX; 
-  snapshot.peckActive = peckDetectedRecently(nowMs);
+  snapshot.peckActive = peckDetectedRecently(currentMs);
   
   return true;
 }
@@ -1681,7 +1689,14 @@ void displaySensorSnapshot(const SensorSnapshot& snapshot) {
 }
 
 
-
+void syncClock() {
+  DateTime now = rtc.now();
+  // If the RTC has ticked forward to a new second...
+  if (now.second() != anchorTime.second()) {
+    anchorTime = now;       // Update the anchor time
+    anchorMillis = millis(); // Mark the exact millis this happened
+  }
+}
 
 // --- VISUALIZATION HELPERS ---
 
@@ -2162,17 +2177,22 @@ void updateSequenceTimeouts(unsigned long now) {
 void maybeRewardAllSidesForPeck(const SensorSnapshot& snapshot, unsigned long nowMs) {
   static bool lastPeckActive = false;
 
+  // Detect RISING edge of peck event
   bool newPeckEvent = rewardAllSidesOnPeck && snapshot.peckActive && !lastPeckActive;
   lastPeckActive = snapshot.peckActive;
 
   if (!newPeckEvent) return;
   if (currentDisplayMode != DISPLAY_MODE_DEPLOY) return;
   if (currentMode != MODE_IDLE) return;
-  if (nowMs - lastMoveMs <= moveCooldownMs) return;
+  
+  // If we are already waiting for a button or menu hold, ignore pecks
+  if (panel1MenuHoldActive || deferredMenuBtn > 0 || panel1DeferredRewardMs > 0) return;
 
-  buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
-  for (uint8_t side = 1; side <= SIDE_COUNT; side++) {
-    deliverRewardForSide(side);
+  // START DEFERRAL TIMER
+  if (peckDeferredRewardMs == 0) {
+     peckDeferredRewardMs = nowMs;
+     // Optional: Very short chirp to say "I felt that"
+     // buzzTest(500, 10); 
   }
 }
 
@@ -2542,56 +2562,58 @@ void displayDeploymentView(const SensorSnapshot& snapshot, const char* btnLbl) {
 
 
 void readAndSend() {
-  SensorSnapshot snapshot;
-  if (!captureSensorSnapshot(snapshot)) {
-    return;
-  }
-
   unsigned long nowMs = millis();
   const char* buttonLabel = buttonEventPending ? lastButtonEvent : "";
 
-  maybeRewardAllSidesForPeck(snapshot, nowMs);
+  // Timers for Decoupled Fast Mode
+  static unsigned long lastSensorLoopMs = 0;
+  static unsigned long lastLogLoopMs = 0;
 
   switch (samplingState) {
     // -------------------------------------------------------------------
-    // STATE: BASELINING (Initial startup or re-calibration)
+    // STATE: BASELINING 
     // -------------------------------------------------------------------
-    case STATE_BASELINING:
+    case STATE_BASELINING: {
+      SensorSnapshot snapshot;
+      // In baseline, we ALWAYS read sensors
+      if (!captureSensorSnapshot(snapshot, true)) return;
+      
       recordBaselineSample(snapshot);
       if (baselineStartMs == 0) baselineStartMs = nowMs;
       
       if (nowMs - baselineStartMs >= BASELINE_DURATION_MS) {
         finalizeBaselineFromAccumulator();
-        
-        // LOGGING: Record that initialization is done
         appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "INFO", "Base Done");
         closeLogFile(); 
         
-        // --- MODIFIED LOGIC START ---
+        // Mode Switch
         if (CONSTANT_SAMPLING_MODE) {
-           // Skip Sleep -> Go directly to Fast Mode
            samplingState = STATE_FAST_SAMPLING;
-           setSensorIntervalMs(SENSOR_INTERVAL_FAST_MS);
            fastModeStartMs = nowMs;
            stableSinceMs = 0;
            lastChangeDuringFastMs = nowMs;
            showStateBanner(F("Always On"));
         } else {
-           // Normal Behavior -> Go to Sleep
            samplingState = STATE_SLEEPING;
            setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
            stableSinceMs = 0;
            showStateBanner(F("Sleep"));
         }
-        // --- MODIFIED LOGIC END ---
+        // Initialize fast timers
+        lastSensorLoopMs = nowMs;
+        lastLogLoopMs = nowMs;
       }
       break;
+    }
 
     // -------------------------------------------------------------------
-    // STATE: SLEEPING (Low power, checking for triggers)
+    // STATE: SLEEPING (Slow 1Hz Check)
     // -------------------------------------------------------------------
     case STATE_SLEEPING: {
-      // (This state is unreachable if CONSTANT_SAMPLING_MODE is true)
+      // In Sleep, we use the interrupt timer (1000ms), so we just read once per call
+      SensorSnapshot snapshot;
+      if (!captureSensorSnapshot(snapshot, true)) return;
+
       if (!sessionBaseline.valid) {
         samplingState = STATE_BASELINING;
         resetBaselineAccumulator();
@@ -2603,26 +2625,24 @@ void readAndSend() {
 
       bool outsideBaseline = !snapshotWithinBaseline(snapshot);
       
-      // CHECK FOR WAKE UP
       if (outsideBaseline || snapshot.peckActive || buttonEventPending) {
         samplingState = STATE_FAST_SAMPLING;
-        setSensorIntervalMs(SENSOR_INTERVAL_FAST_MS);
+        // In Fast Mode, we ignore the slow interrupt timer and run freely in the loop
+        // but we init the decoupling timers here
+        lastSensorLoopMs = nowMs;
+        lastLogLoopMs = nowMs;
+        
         fastModeStartMs = nowMs;
         stableSinceMs = 0;
         lastChangeDuringFastMs = nowMs;
         
         displayFastSnapshot(snapshot);
         
-        if (currentMode == MODE_IDLE) {
-          sendDistancesFramed(snapshot.distances);
-        }
-        
         const char* wakeReason = "WAKE-SENS"; 
         if (buttonEventPending) wakeReason = "WAKE-BTN";
         else if (snapshot.peckActive) wakeReason = "WAKE-PECK";
         
         appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, wakeReason, buttonLabel);
-        
         foodDeliveredSinceLastLog = false;
         buttonEventPending = false;
         lastSnapshot = snapshot;
@@ -2634,72 +2654,87 @@ void readAndSend() {
     }
 
     // -------------------------------------------------------------------
-    // STATE: FAST (Recording data, interacting)
+    // STATE: FAST (Decoupled Logging vs Reading)
     // -------------------------------------------------------------------
     case STATE_FAST_SAMPLING: {
-      if (currentDisplayMode == DISPLAY_MODE_SENSORS) {
-          displaySensorSnapshot(snapshot);
-      } else if (currentDisplayMode == DISPLAY_MODE_DEPLOY) {
-          displayDeploymentView(snapshot, buttonLabel); 
-      } else {
-          displayFastSnapshot(snapshot); 
-      }
-
-      if (currentMode == MODE_IDLE) {
-        sendDistancesFramed(snapshot.distances);
-      }
-
-      appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, "FAST", buttonLabel);
-      foodDeliveredSinceLastLog = false;
-      buttonEventPending = false;
-
-      bool withinBaseline = snapshotWithinBaseline(snapshot);
+      // Note: In this state, this function is called CONSTANTLY by loop()
+      // We manage our own timing using millis() here.
       
-      // CHECK FOR SLEEP TIMEOUT (No activity)
-      if (withinBaseline) {
-        if (stableSinceMs == 0) stableSinceMs = nowMs;
+      // --- TASK A: DATA LOGGING (10Hz / 100ms) ---
+      if (nowMs - lastLogLoopMs >= LOG_INTERVAL_MS) {
+        lastLogLoopMs = nowMs;
         
-        // --- MODIFIED LOGIC START ---
-        // Only sleep if CONSTANT_SAMPLING_MODE is FALSE
-        if (!CONSTANT_SAMPLING_MODE && (nowMs - stableSinceMs >= FAST_STABLE_HOLD_MS)) {
-          
-          appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "No Activity");
-          closeLogFile(); 
-
-          samplingState = STATE_SLEEPING;
-          setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
-          stableSinceMs = 0;
-          showStateBanner(F("Sleep"));
-        }
-        // --- MODIFIED LOGIC END ---
-
-      } else {
-        stableSinceMs = 0;
+        SensorSnapshot quickSnapshot;
+        // FALSE = Don't read I2C, just grab latest values from memory + Accel + Time
+        captureSensorSnapshot(quickSnapshot, false); 
+        
+        appendLogEntry(quickSnapshot.timestamp, quickSnapshot.distances, quickSnapshot.statuses, quickSnapshot.peckActive, foodDeliveredSinceLastLog, "FAST", buttonLabel);
+        
+        // Clear one-shot flags after logging
+        foodDeliveredSinceLastLog = false;
+        buttonEventPending = false;
       }
 
-      if (snapshotChangedSince(snapshot, lastSnapshot)) {
-        lastChangeDuringFastMs = nowMs;
-      }
+      // --- TASK B: SENSOR UPDATE & SCREEN (3.3Hz / 300ms) ---
+      if (nowMs - lastSensorLoopMs >= SENSOR_INTERVAL_FAST_MS) {
+         lastSensorLoopMs = nowMs;
+         
+         SensorSnapshot fullSnapshot;
+         // TRUE = Actually talk to I2C sensors
+         if (!captureSensorSnapshot(fullSnapshot, true)) return;
 
-      // CHECK FOR BASELINE REFRESH (Long activity)
-      if (nowMs - lastChangeDuringFastMs >= BASELINE_REFRESH_MS) {
-        applySnapshotAsBaseline(snapshot);
-        
-        // If constant sampling, just log "New Base" but stay in FAST
-        if (CONSTANT_SAMPLING_MODE) {
-           appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "INFO", "New Base");
-           showStateBanner(F("New base"));
-        } else {
-           appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "SLEEP", "New Base");
-           closeLogFile(); 
-           samplingState = STATE_SLEEPING;
-           setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
+         maybeRewardAllSidesForPeck(fullSnapshot, nowMs);
+
+         // Update Screen
+         if (currentDisplayMode == DISPLAY_MODE_SENSORS) {
+             displaySensorSnapshot(fullSnapshot);
+         } else if (currentDisplayMode == DISPLAY_MODE_DEPLOY) {
+             displayDeploymentView(fullSnapshot, buttonLabel); 
+         } else {
+             displayFastSnapshot(fullSnapshot); 
+         }
+
+         // Check Sleep Logic
+         bool withinBaseline = snapshotWithinBaseline(fullSnapshot);
+         if (withinBaseline) {
+           if (stableSinceMs == 0) stableSinceMs = nowMs;
+           if (!CONSTANT_SAMPLING_MODE && (nowMs - stableSinceMs >= FAST_STABLE_HOLD_MS)) {
+             appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "SLEEP", "No Activity");
+             closeLogFile(); 
+             samplingState = STATE_SLEEPING;
+             setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS); // Go back to slow interrupts
+             stableSinceMs = 0;
+             showStateBanner(F("Sleep"));
+           }
+         } else {
            stableSinceMs = 0;
-           showStateBanner(F("New base"));
-        }
-      }
+         }
 
-      lastSnapshot = snapshot;
+         // Check Baseline Refresh
+         if (snapshotChangedSince(fullSnapshot, lastSnapshot)) {
+           lastChangeDuringFastMs = nowMs;
+         }
+         if (nowMs - lastChangeDuringFastMs >= BASELINE_REFRESH_MS) {
+           applySnapshotAsBaseline(fullSnapshot);
+           if (CONSTANT_SAMPLING_MODE) {
+              appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "INFO", "New Base");
+              showStateBanner(F("New base"));
+           } else {
+              appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "SLEEP", "New Base");
+              closeLogFile(); 
+              samplingState = STATE_SLEEPING;
+              setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
+              stableSinceMs = 0;
+              showStateBanner(F("New base"));
+           }
+         }
+         
+         // Keep "lastSnapshot" updated with full data
+         lastSnapshot = fullSnapshot;
+         
+         // Feed the watchdog
+         checkSensorHealth(nowMs);
+      }
       break;
     }
   }
@@ -2927,6 +2962,11 @@ void setup() {
   RTC_SELECT();
   rtc.begin(); // assume time is already set
 
+  // --- SYNC INIT ---
+  anchorTime = rtc.now();
+  anchorMillis = millis();
+  // -----------------
+
   // Temperature/humidity and peck detection sensors share the RTC/OLED channel
   RTC_SELECT();
   ahtReady = aht20.begin();
@@ -3127,28 +3167,27 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-
+  // ---------------------------------------------------------
+  // 1. HIGH PRIORITY: ACCELEROMETER
+  // ---------------------------------------------------------
   runHighSpeedAccelCheck();
 
-
   // ---------------------------------------------------------
-  // 1. CHECK SENSOR TIMER (Atomic)
+  // 2. CHECK SENSOR TIMER (Atomic)
   // ---------------------------------------------------------
-  bool performSensorUpdate = false;
-
+  // We capture this flag for Sleep/Baseline modes
+  bool timerTick = false;
   noInterrupts();
   if (sensorUpdateFlag) {
     sensorUpdateFlag = false;
-    performSensorUpdate = true;
+    timerTick = true;
   }
   interrupts();
 
   // ---------------------------------------------------------
-  // 2. PROCESS PENDING BUTTON SCANS (The Optimized Block)
+  // 3. PROCESS PENDING BUTTON SCANS
   // ---------------------------------------------------------
-  // Take a snapshot of pending buttons so we don't toggle interrupts constantly
   uint16_t snapshotPending = 0;
-  
   noInterrupts();
   snapshotPending = buttonPendingMask;
   interrupts();
@@ -3156,34 +3195,20 @@ void loop() {
   if (snapshotPending) {
     for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
       uint16_t bit = (uint16_t)1 << i;
-
-      // Only waste CPU cycles checking buttons that actually changed
       if (snapshotPending & bit) {
-        
         unsigned long lastChange;
         uint8_t rawState;
-
-        // Retrieve the ISR data atomically
         noInterrupts();
         lastChange = buttonLastChange[i];
         rawState = buttonRawState[i];
         interrupts();
 
-        // Debounce Check
         if ((now - lastChange) >= BUTTON_DEBOUNCE_MS) {
-          
-          // Clear the pending bit safely
           noInterrupts();
           buttonPendingMask &= ~bit;
           interrupts();
-
-          // Update the stable state
-          // We don't need noInterrupts for buttonState access here 
-          // because the ISR only touches buttonRawState, not buttonState.
           if (buttonState[i] != rawState) {
             buttonState[i] = rawState;
-            
-            // Mark that a verified event occurred
             noInterrupts();
             buttonEventMask |= bit;
             interrupts();
@@ -3194,10 +3219,9 @@ void loop() {
   }
 
   // ---------------------------------------------------------
-  // 3. HANDLE VERIFIED BUTTON EVENTS
+  // 4. HANDLE VERIFIED BUTTON EVENTS
   // ---------------------------------------------------------
   uint16_t pendingEvents = 0;
-
   noInterrupts();
   pendingEvents = buttonEventMask;
   buttonEventMask = 0;
@@ -3207,55 +3231,65 @@ void loop() {
   handleMenuActivationHold(now);
 
   // ---------------------------------------------------------
-  // CHECK DEFERRED MENU NAVIGATION (Fix for 4-Button Exit)
+  // CHECK DEFERRED PECK REWARD (Vibration vs Human Hand)
   // ---------------------------------------------------------
+  if (peckDeferredRewardMs > 0) {
+    // 1. If ANY button activity is detected, CANCEL the peck reward
+    //    (Because humans press buttons; birds don't press buttons while pecking simultaneously)
+    if (buttonEventPending || allPanel1Pressed() || panel1MenuHoldActive || deferredMenuBtn > 0) {
+       peckDeferredRewardMs = 0; // Cancelled by human interaction
+       // Optional: Low beep to indicate "Peck Ignored due to Buttons"
+    }
+    // 2. If 350ms passed and no buttons pressed, DELIVER the reward
+    else if (now - peckDeferredRewardMs > 350) {
+       if (now - lastMoveMs > moveCooldownMs) {
+          buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
+          for (uint8_t side = 1; side <= SIDE_COUNT; side++) {
+             deliverRewardForSide(side);
+          }
+       }
+       peckDeferredRewardMs = 0; // Reset
+    }
+  }
+
+  // Check Deferred Menu Navigation
   if (deferredMenuBtn > 0) {
-      // 1. If user is holding all buttons (Exit attempt), CANCEL the single press
       if (allPanel1Pressed() || panel1MenuHoldActive) {
           deferredMenuBtn = 0; 
       }
-      // 2. If time passed (300ms) and no Exit attempt, EXECUTE the command
       else if (now - deferredMenuTimer > MENU_CLICK_DELAY) {
           executeMenuCommand(deferredMenuBtn);
-          deferredMenuBtn = 0; // Reset
+          deferredMenuBtn = 0; 
       }
   }
 
-  // If in menu and waiting for release
+  // Menu Release Check
   if (currentMode != MODE_IDLE && menuAwaitingRelease && allPanel1Released()) {
     menuAwaitingRelease = false;
-    // showMenuMain();
     if (currentMode == MODE_MENU_MAIN) showMenuMain();
   }
-  // ---------------------------------------------------------
-  // CHECK DEFERRED REWARD (Panel 1 "Human Grace Period")
-  // ---------------------------------------------------------
+
+  // Check Deferred Reward
   if (panel1DeferredRewardMs > 0) {
-    // 1. If user successfully triggered the Menu Hold, CANCEL the reward
     if (panel1MenuHoldActive) {
        panel1DeferredRewardMs = 0;
     }
-    // 2. If 350ms passed and no Menu Hold happened, DELIVER the reward
     else if (now - panel1DeferredRewardMs > 350) {
        if (now - lastMoveMs > moveCooldownMs) {
           buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
           deliverRewardForSide(1);
        }
-       panel1DeferredRewardMs = 0; // Reset
+       panel1DeferredRewardMs = 0; 
     }
   }
 
-  updateSequenceTimeouts(now); // (Existing line)
+  updateSequenceTimeouts(now);
 
-  // Process the actual clicks
+  // Process Clicks
   if (pendingEvents) {
     for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
       if (pendingEvents & ((uint16_t)1 << i)) {
-        
-        // We already updated buttonState[i] in step 2, so just read it
         uint8_t state = buttonState[i];
-
-        // Edge Detection: Input Pullup means LOW is pressed
         if (prevButtonState[i] == HIGH && state == LOW) {
           handleButtonPress(i, now);
         }
@@ -3265,28 +3299,24 @@ void loop() {
   }
 
   // ---------------------------------------------------------
-  // 4. POWER SWITCH LOGIC (Shutdown)
+  // 5. MAIN STATE MACHINE EXECUTION (The Fix)
   // ---------------------------------------------------------
-  // if (!shutdownInitiated && (now - startupMillis) > SWITCH_STARTUP_GRACE_MS) {
-  //   // If switch is HIGH, it means it is OPEN (OFF position for active-low switch)
-  //   if (digitalRead(SWITCH_DETECT_PIN) == HIGH) {
-  //     if (switchHighStart == 0) {
-  //       switchHighStart = now;
-  //     } else if (now - switchHighStart >= SWITCH_DEBOUNCE_DELAY_MS) {
-  //       shutdownInitiated = true;
-  //       shutdownSequence();
-  //     }
-  //   } else {
-  //     switchHighStart = 0;
-  //   }
-  // }
-
-  // ---------------------------------------------------------
-  // 5. SENSOR READS (Low Priority)
-  // ---------------------------------------------------------
-  // Only read sensors if the flag was set AND we aren't mid-shutdown
-  if (performSensorUpdate && !shutdownInitiated) {
-    readAndSend();
-    checkSensorHealth(millis()); // 
+  if (!shutdownInitiated) {
+     
+     // CASE A: FAST MODE
+     // Run constantly so it can handle the 100ms logging vs 300ms sensor split
+     if (samplingState == STATE_FAST_SAMPLING) {
+        readAndSend(); 
+        // We throttle checkSensorHealth inside here using millis if needed, 
+        // or just call it every loop (it has its own internal timer check).
+        checkSensorHealth(now);
+     } 
+     
+     // CASE B: SLEEP / BASELINE
+     // Respect the interrupt timer (1Hz or 10Hz) to save power/CPU
+     else if (timerTick) {
+        readAndSend();
+        checkSensorHealth(now);
+     }
   }
 }
