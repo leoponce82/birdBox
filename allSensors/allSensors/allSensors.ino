@@ -1046,87 +1046,48 @@ void appendStartupNotice() {
   DateTime now = rtc.now();
   if (!ensureLogFile(now)) return;
 
-  File file = SD.open(currentLogFilename, FILE_WRITE);
-  if (!file) return;
 
-  file.println();
-  file.print(F("=== SESSION START: "));
-  file.print(now.year());
-  file.print('-');
-  file.print(now.month());
-  file.print('-');
-  file.print(now.day());
-  file.println(F(" ==="));
+  sessionFile.println();
+  sessionFile.print(F("=== SESSION START: "));
+  sessionFile.print(now.year());
+  sessionFile.print('-');
+  sessionFile.print(now.month());
+  sessionFile.print('-');
+  sessionFile.print(now.day());
+  sessionFile.println(F(" ==="));
   
   // Battery
   float voltage = readBatteryVoltage();
   int percent = batteryPercentFromVoltage(voltage);
-  file.print(F("# Battery: "));
-  file.print(voltage, 2);
-  file.print(F("V ("));
-  file.print(percent);
-  file.println(F("%)"));
+  sessionFile.print(F("# Battery: "));
+  sessionFile.print(voltage, 2);
+  sessionFile.print(F("V ("));
+  sessionFile.print(percent);
+  sessionFile.println(F("%)"));
 
   // Environment (Inline read)
   if (ahtReady) {
     sensors_event_t humidity, temp;
     aht20.getEvent(&humidity, &temp);
-    file.print(F("# Environment: "));
-    file.print(temp.temperature);
-    file.print(F("C, "));
-    file.print(humidity.relative_humidity);
-    file.println(F("%"));
+    sessionFile.print(F("# Environment: "));
+    sessionFile.print(temp.temperature);
+    sessionFile.print(F("C, "));
+    sessionFile.print(humidity.relative_humidity);
+    sessionFile.println(F("%"));
   }
 
   // Header Row for CSV data
-  file.print(F("Date, Time"));
+  sessionFile.print(F("Date, Time"));
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-    file.print(F(", S")); file.print(i + 1);
+    sessionFile.print(F(", S")); sessionFile.print(i + 1);
   }
-  file.print(F(", Peck, Food, State, Button"));
-  file.println();
+  sessionFile.print(F(", Peck, Food, State, Button"));
+  sessionFile.println();
 
-  file.flush();
-  file.close();
+  sessionFile.flush();
+  sessionFile.close();
 }
 
-void appendSessionHeader(DateTime now) {
-  if (!sdAvailable) {
-    return;
-  }
-
-  RTC_SELECT();
-
-  if (!ensureLogFile(now)) {
-    return;
-  }
-
-  File file = SD.open(currentLogFilename, FILE_WRITE);
-  if (!file) {
-    return;
-  }
-
-  file.println();
-  file.print(F("-------------- "));
-  file.print(now.year());
-  file.print('-');
-  if (now.month() < 10) file.print('0');
-  file.print(now.month());
-  file.print('-');
-  if (now.day() < 10) file.print('0');
-  file.print(now.day());
-  file.println(F(" --------"));
-
-  float voltage = readBatteryVoltage();
-  int percent = batteryPercentFromVoltage(voltage);
-  file.print(F("Battery: "));
-  file.print(voltage, 2);
-  file.print(F("V ("));
-  file.print(percent);
-  file.println(F("%)"));
-  file.flush();
-  file.close();
-}
 
 void appendShutdownNotice() {
   if (!sdAvailable) {
@@ -2999,7 +2960,7 @@ void setup() {
 
   if (sdAvailable) {
     RTC_SELECT();
-    appendSessionHeader(rtc.now());
+    appendStartupNotice();
   }
 
 
@@ -3057,7 +3018,7 @@ void setup() {
 
 
   systemActive = true; // Enable logging
-  appendStartupNotice();
+  
 
   forcePrimingRead(); 
   // Initialize watchdog timers
