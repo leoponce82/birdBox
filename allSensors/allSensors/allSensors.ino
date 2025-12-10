@@ -589,8 +589,9 @@ const int STEPS_DELOCK_FOOD = (int)((STEPS_PER_REV_FOOD * (long)MICROSTEPS * 20L
 // pulse timing (adjust for your driver/motor)
 const unsigned int STEP_PULSE_US = 1500;   // high/low pulse width (slower for precise tunnel alignment)
 const unsigned int STEP_PULSE_FOOD_US = 1000; // high/low pulse width for food motor
-const float TUNNEL_MAX_SPEED_STEPS_S = 220.0f;  // slower for precise hall alignment
-const float TUNNEL_ACCEL_STEPS_S2    = 400.0f;  // gentler ramp to reduce overshoot
+// Slightly slower profile to keep more torque in reserve when the tunnel sticks
+const float TUNNEL_MAX_SPEED_STEPS_S = 180.0f;  // slower for precise hall alignment and higher torque
+const float TUNNEL_ACCEL_STEPS_S2    = 300.0f;  // gentler ramp to reduce overshoot/stalls
 const float FOOD_MAX_SPEED_STEPS_S = 800.0f;   // top speed with torque-preserving ramping
 const float FOOD_ACCEL_STEPS_S2    = 1200.0f;  // acceleration profile to prevent stalls
 const unsigned long TUNNEL_VIBRATION_DURATION_MS = 1200; // brief shake to clear stuck pellets
