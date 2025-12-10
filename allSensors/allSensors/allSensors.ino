@@ -3214,7 +3214,17 @@ void loop() {
     sensorUpdateFlag = false;
     timerTick = true;
   }
+  // Fallback: if the interrupt ever stops firing, use millis()
+  static unsigned long lastLoopSensorMs = 0;
+  uint16_t intervalCopy = sensorUpdateIntervalTicks;
   interrupts();
+
+  if (timerTick) {
+    lastLoopSensorMs = now;
+  } else if (now - lastLoopSensorMs >= intervalCopy) {
+    timerTick = true;
+    lastLoopSensorMs = now;
+  }
 
   // ---------------------------------------------------------
   // 3. PROCESS PENDING BUTTON SCANS
