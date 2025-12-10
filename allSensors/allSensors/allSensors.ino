@@ -33,8 +33,9 @@ File sessionFile; // Keeps the file open in memory
 unsigned long lastLogSyncMs = 0;
 const unsigned long LOG_SYNC_INTERVAL_MS = 2000; 
 
-// Flag to control whether the Uno R4 connection is expected/required
-bool expectUnoR4 = false;
+// Behavioral toggles
+bool expectUnoR4 = false;           // Legacy: always false now that the Uno R4 is retired
+bool rewardAllSidesOnPeck = false;  // When true, any peck dispenses on all four sides
 
 // Display Modes
 enum FastDisplayMode {
@@ -119,7 +120,7 @@ uint8_t currentTunnelSide = 1;
 
 const uint8_t DEFAULT_SEQUENCE_TEMPLATE[DEFAULT_SEQUENCE_LENGTH] = {1, 2, 3, 4};
 const uint32_t SEQUENCE_STORAGE_MAGIC = 0xB105EED1;
-const uint8_t SEQUENCE_STORAGE_VERSION = 6; // <--- INCREMENTED TO FORCE RESET
+const uint8_t SEQUENCE_STORAGE_VERSION = 7; // <--- INCREMENTED TO FORCE RESET
 const int SEQUENCE_STORAGE_ADDR = 0;
 
 unsigned long panel1DeferredRewardMs = 0;
@@ -131,9 +132,9 @@ const unsigned long MENU_CLICK_DELAY = 300;
 struct SequenceStorage {
   uint32_t magic;
   uint8_t version;
-  uint8_t expectUnoR4Enabled;
   uint8_t fastDisplayMode;
-  uint8_t logicMode; 
+  uint8_t logicMode;
+  uint8_t rewardAllSidesOnPeckEnabled;
   uint8_t lengths[SIDE_COUNT];
   uint8_t sequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
   uint8_t checksum;
@@ -145,9 +146,9 @@ struct SequenceStorage {
     sum += (uint8_t)((magic >> 16) & 0xFF);
     sum += (uint8_t)((magic >> 24) & 0xFF);
     sum += version;
-    sum += expectUnoR4Enabled;
-    sum += fastDisplayMode; 
-    sum += logicMode; 
+    sum += fastDisplayMode;
+    sum += logicMode;
+    sum += rewardAllSidesOnPeckEnabled;
     for (uint8_t side = 0; side < SIDE_COUNT; side++) {
       sum += lengths[side];
       for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
@@ -177,7 +178,8 @@ void applyDefaultSequences() {
     }
   }
   resetSequenceTracking();
-  expectUnoR4 = false; 
+  expectUnoR4 = false;
+  rewardAllSidesOnPeck = false;
   currentDisplayMode = DISPLAY_MODE_BUTTONS;
   currentLogicMode = SEQ_LOGIC_IMMEDIATE; // <--- CHANGED DEFAULT TO 1-SHOT
 }
@@ -186,9 +188,9 @@ void saveSequencesToEEPROM() {
   SequenceStorage data;
   data.magic = SEQUENCE_STORAGE_MAGIC;
   data.version = SEQUENCE_STORAGE_VERSION;
-  data.expectUnoR4Enabled = expectUnoR4 ? 1 : 0;
-  data.fastDisplayMode = (uint8_t)currentDisplayMode; 
-  data.logicMode = (uint8_t)currentLogicMode; 
+  data.fastDisplayMode = (uint8_t)currentDisplayMode;
+  data.logicMode = (uint8_t)currentLogicMode;
+  data.rewardAllSidesOnPeckEnabled = rewardAllSidesOnPeck ? 1 : 0;
 
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
     data.lengths[side] = storedSequenceLengths[side];
@@ -220,12 +222,13 @@ void loadSequencesFromEEPROM() {
   if (version == SEQUENCE_STORAGE_VERSION) {
     SequenceStorage data;
     EEPROM.get(SEQUENCE_STORAGE_ADDR, data);
-    
+
     if (data.computeChecksum() == data.checksum) {
-      expectUnoR4 = (data.expectUnoR4Enabled != 0);
-      
+      expectUnoR4 = false; // Legacy flag intentionally disabled
+      rewardAllSidesOnPeck = (data.rewardAllSidesOnPeckEnabled != 0);
+
       uint8_t dMode = data.fastDisplayMode;
-      if (dMode > 2) dMode = 0; 
+      if (dMode > 2) dMode = 0;
       currentDisplayMode = (FastDisplayMode)dMode;
 
       // LOAD LOGIC MODE
@@ -1858,8 +1861,8 @@ void showMenuMoreOptions() {
   display.println(F("Options"));
   display.println(F("1=Factory reset"));
   display.println(F("2=Exit menu"));
-  display.print(F("3=Uno R4: "));
-  display.println(expectUnoR4 ? F("On") : F("Off"));
+  display.print(F("3=Peck: "));
+  display.println(rewardAllSidesOnPeck ? F("All sides") : F("Off"));
   display.println(F("4=Back"));
   display.display();
 }
@@ -2156,6 +2159,22 @@ void updateSequenceTimeouts(unsigned long now) {
   }
 }
 
+void maybeRewardAllSidesForPeck(const SensorSnapshot& snapshot, unsigned long nowMs) {
+  static bool lastPeckActive = false;
+
+  bool newPeckEvent = rewardAllSidesOnPeck && snapshot.peckActive && !lastPeckActive;
+  lastPeckActive = snapshot.peckActive;
+
+  if (!newPeckEvent) return;
+  if (currentMode != MODE_IDLE) return;
+  if (nowMs - lastMoveMs <= moveCooldownMs) return;
+
+  buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
+  for (uint8_t side = 1; side <= SIDE_COUNT; side++) {
+    deliverRewardForSide(side);
+  }
+}
+
 void handleMenuActivationHold(unsigned long now) {
   // Check if all 4 buttons are pressed
   if (allPanel1Pressed()) {
@@ -2250,11 +2269,11 @@ void showMenuOptions() {
   display.setTextSize(1);
   display.setCursor(0, 10);
   display.println(F("OPTIONS"));
-  
+
   display.println(F("1. Factory Reset"));
-  
-  display.print(F("2. Uno R4: "));
-  display.println(expectUnoR4 ? F("ON") : F("OFF"));
+
+  display.print(F("2. Peck reward: "));
+  display.println(rewardAllSidesOnPeck ? F("ALL SIDES") : F("OFF"));
 
   // UPDATED DISPLAY LOGIC
   display.print(F("3. Logic: "));
@@ -2382,9 +2401,9 @@ void executeMenuCommand(uint8_t number) {
         currentMode = MODE_MENU_RESET_CONFIRM;
         showMenuResetConfirm();
       } else if (number == 2) {
-        expectUnoR4 = !expectUnoR4;
-        saveSequencesToEEPROM(); 
-        showMenuOptions();       
+        rewardAllSidesOnPeck = !rewardAllSidesOnPeck;
+        saveSequencesToEEPROM();
+        showMenuOptions();
       } else if (number == 3) {
         uint8_t mode = (uint8_t)currentLogicMode;
         mode++;
@@ -2529,6 +2548,8 @@ void readAndSend() {
 
   unsigned long nowMs = millis();
   const char* buttonLabel = buttonEventPending ? lastButtonEvent : "";
+
+  maybeRewardAllSidesForPeck(snapshot, nowMs);
 
   switch (samplingState) {
     // -------------------------------------------------------------------
