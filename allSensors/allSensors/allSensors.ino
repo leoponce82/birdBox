@@ -58,7 +58,7 @@ SequenceLogicMode currentLogicMode = SEQ_LOGIC_IMMEDIATE; // <--- CHANGED DEFAUL
 const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; 
 
 // Sampling cadence
-const unsigned long SENSOR_INTERVAL_FAST_MS = 100;      
+const unsigned long SENSOR_INTERVAL_FAST_MS = 300;      
 const unsigned long SENSOR_INTERVAL_SLEEP_MS = 1000;    
 const unsigned long SENSOR_INTERVAL_BASELINE_MS = 100; 
 
