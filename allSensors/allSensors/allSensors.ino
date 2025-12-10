@@ -20,6 +20,9 @@ struct SensorSnapshot;
 // ---------------------------------------------------------
 // 1. GLOBAL SETTINGS & ENUMS (MUST BE AT THE TOP)
 // ---------------------------------------------------------
+unsigned long lastPeckEventMs = 0;      // for refractory
+volatile uint8_t peckEventCounter = 0;  // events since last log row
+
 // Independent Logging Rate (10Hz)
 const unsigned long LOG_INTERVAL_MS = 100;
 // --- TIME SYNC GLOBALS ---
@@ -63,7 +66,7 @@ SequenceLogicMode currentLogicMode = SEQ_LOGIC_IMMEDIATE; // <--- CHANGED DEFAUL
 const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; 
 
 // Sampling cadence
-const unsigned long SENSOR_INTERVAL_FAST_MS = 300;      
+const unsigned long SENSOR_INTERVAL_FAST_MS = 200;      
 const unsigned long SENSOR_INTERVAL_SLEEP_MS = 1000;    
 const unsigned long SENSOR_INTERVAL_BASELINE_MS = 100; 
 
@@ -303,6 +306,7 @@ unsigned long lastPeckDetectedMs = 0;
 bool visualPeckPending = false;
 const float ACCEL_BASELINE_ALPHA = 0.15f;       // slow baseline keeps small shocks visible
 const unsigned long PECK_HOLD_MS = 350;         // quick visual reset for rapid tuning
+const unsigned long PECK_REFRACTORY_MS = 200;  // or 80–120 ms
 const bool SERIAL_ACCEL_DEBUG = false;           // emit raw + filtered accel readings over Serial
 const unsigned long ACCEL_DEBUG_INTERVAL_MS = 10;
 const unsigned long SERIAL_BAUD = 115200;
@@ -877,7 +881,7 @@ bool initSensorOn(uint8_t ch, uint8_t idxInCh) {
   sensors[globalIndex].setAddress(perChannelAddr[idxInCh]);
   sensors[globalIndex].setDistanceMode(VL53L1X::Short);         // Short/Medium/Long
   sensors[globalIndex].setMeasurementTimingBudget(20000);        // µs
-  sensors[globalIndex].startContinuous(20);                      // ms between readings
+  sensors[globalIndex].startContinuous(25);                      // ms between readings
   return true;
 }
 
@@ -980,13 +984,13 @@ bool ensureLogFile(DateTime now) {
 
     // Write header if new
     if (!fileExists) {
-      sessionFile.print(F("Date, Time, Millis"));
+      sessionFile.print(F("Date, Time"));
       for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
         sessionFile.print(F(", Sensor"));
         sessionFile.print(i + 1);
         sessionFile.print(F(" (mm)"));
       }
-      sessionFile.print(F(", Temp (C), Humidity (%), Peck, Food, State, Button"));
+      sessionFile.print(F(", Peck, PeckCount, Food, State, Button"));
       sessionFile.println();
     }
   }
@@ -994,7 +998,7 @@ bool ensureLogFile(DateTime now) {
   return true;
 }
 
-void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses, bool peckActive, bool foodDelivered = false, const char* stateLabel = "", const char* buttonLabel = "") {
+void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t *statuses, bool peckActive, bool foodDelivered = false, const char* stateLabel = "", const char* buttonLabel = "",uint8_t peckCount=0) {
   if (!systemActive) return; 
   if (!sdAvailable) return;
   if (!ensureLogFile(timestamp)) return; 
@@ -1045,6 +1049,8 @@ void appendLogEntry(DateTime timestamp, const uint16_t *distances, const uint8_t
   sessionFile.print(F(", "));
   sessionFile.print(peckActive ? F("yes") : F("no"));
   sessionFile.print(F(", "));
+  sessionFile.print((int)peckCount);
+  sessionFile.print(F(", "));
   sessionFile.print(foodDelivered ? F("yes") : F("no"));
   sessionFile.print(F(", "));
   sessionFile.print(stateLabel);
@@ -1093,13 +1099,7 @@ void appendStartupNotice() {
     sessionFile.println(F("%"));
   }
 
-  // Header Row for CSV data
-  sessionFile.print(F("Date, Time"));
-  for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-    sessionFile.print(F(", S")); sessionFile.print(i + 1);
-  }
-  sessionFile.print(F(", Peck, Food, State, Button"));
-  sessionFile.println();
+  
 
   sessionFile.flush();
   sessionFile.close();
@@ -1328,28 +1328,32 @@ float updatePeckDetection(unsigned long nowMs, bool allowDetect) {
   // Calculate Magnitude
   float highpassMag = sqrtf(dx * dx + dy * dy + dz * dz);
 
-  // --- AUDIO DEBUGGING LOGIC ---
-  // Only run this if we are NOT currently baselining (so we don't beep during setup)
-  if (allowDetect) {
-      
-      // 1. THE TRIGGER
-      if (highpassMag > PECK_THRESHOLD_MARGIN_MS2) {
-        lastPeckDetectedMs = nowMs;
-        visualPeckPending = true;
-        // SUCCESS: High Pitch Beep (1000Hz, 50ms)
-        // if (BUZZER_USE_TONE) tone(BUZZER_PIN, 1000, 50); 
-      }
-      // 2. THE "NEAR MISS"
-      // If we see a shock that is clearly not noise (> 0.15), but below threshold
-      else if (highpassMag > 0.15f) {
-         // FAIL: Low Pitch Beep (200Hz, 20ms)
-         // This tells you: "I felt that, but you need to lower the threshold!"
-        //  if (BUZZER_USE_TONE) tone(BUZZER_PIN, 200, 20);
-      }
+  // Only treat as a new peck if:
+  //  - allowDetect == true (not baselining)
+  //  - magnitude above threshold
+  //  - outside refractory window
+  if (allowDetect &&
+      highpassMag > PECK_THRESHOLD_MARGIN_MS2 &&
+      (nowMs - lastPeckEventMs) > PECK_REFRACTORY_MS) {
+
+    // This is a NEW peck event
+    lastPeckEventMs = nowMs;
+
+    // Feeds the "recent peck" / icon logic:
+    lastPeckDetectedMs = nowMs;
+
+    // Count it for logging:
+    if (peckEventCounter < 255) {
+      peckEventCounter++;
+    }
+
+    // (Optional: beep)
+    // buzzTest(1000, 30);
   }
 
   return highpassMag;
 }
+
 
 bool peckDetectedRecently(unsigned long nowMs) {
   return accelReady && (nowMs - lastPeckDetectedMs) < PECK_HOLD_MS;
@@ -1494,20 +1498,30 @@ bool captureSensorSnapshot(SensorSnapshot& snapshot, bool readDistanceSensors) {
 
         // Try to read. If not ready, we just keep the old value (Zero-order hold)
         if (sensors[idx].dataReady()) { 
-            sensors[idx].read();
-            uint16_t rawDistance = sensors[idx].ranging_data.range_mm;
-            uint8_t rawStatus = sensors[idx].ranging_data.range_status;
-            
-            if (rawStatus == 0) {
+           sensors[idx].read();
+           uint16_t rawDistance = sensors[idx].ranging_data.range_mm;
+           uint8_t rawStatus = sensors[idx].ranging_data.range_status;
+           
+           // --- FIX BEGINS HERE ---
+           if (rawStatus == 0) {
+               // VALID READING: Apply smoothing
                if (latestDistances[idx] == 0) latestDistances[idx] = rawDistance;
                else {
                    // Simple Filter
                    uint32_t smooth = (rawDistance + ((uint32_t)latestDistances[idx] * 3));
                    latestDistances[idx] = (uint16_t)(smooth >> 2);
                }
-            }
-            latestStatuses[idx]  = rawStatus;
-            lastSensorUpdate[idx] = currentMs; 
+           } else {
+               // INVALID READING (Error, Out of Range, etc):
+               // Force update so we don't freeze on the old value.
+               // We can either set it to rawDistance (which might be 0 or 8190)
+               // or strictly set it to 0 to indicate "Unknown/Far".
+               latestDistances[idx] = rawDistance; 
+           }
+           // --- FIX ENDS HERE ---
+
+           latestStatuses[idx]  = rawStatus;
+           lastSensorUpdate[idx] = currentMs; 
         }
       }
     }
@@ -2584,7 +2598,8 @@ void readAndSend() {
       
       if (nowMs - baselineStartMs >= BASELINE_DURATION_MS) {
         finalizeBaselineFromAccumulator();
-        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "INFO", "Base Done");
+        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, false, "INFO", "Base Done", 0);
+
         closeLogFile(); 
         
         // Mode Switch
@@ -2643,7 +2658,8 @@ void readAndSend() {
         if (buttonEventPending) wakeReason = "WAKE-BTN";
         else if (snapshot.peckActive) wakeReason = "WAKE-PECK";
         
-        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, wakeReason, buttonLabel);
+        appendLogEntry(snapshot.timestamp, snapshot.distances, snapshot.statuses, snapshot.peckActive, foodDeliveredSinceLastLog, wakeReason, buttonLabel, 0);
+
         foodDeliveredSinceLastLog = false;
         buttonEventPending = false;
         lastSnapshot = snapshot;
@@ -2664,12 +2680,27 @@ void readAndSend() {
       // --- TASK A: DATA LOGGING (10Hz / 100ms) ---
       if (nowMs - lastLogLoopMs >= LOG_INTERVAL_MS) {
         lastLogLoopMs = nowMs;
+
+        // Grab and reset peck count
+        uint8_t pecksThisInterval = peckEventCounter;
+        peckEventCounter = 0;
         
         SensorSnapshot quickSnapshot;
         // FALSE = Don't read I2C, just grab latest values from memory + Accel + Time
         captureSensorSnapshot(quickSnapshot, false); 
-        
-        appendLogEntry(quickSnapshot.timestamp, quickSnapshot.distances, quickSnapshot.statuses, quickSnapshot.peckActive, foodDeliveredSinceLastLog, "FAST", buttonLabel);
+
+        bool anyPeck = (pecksThisInterval > 0);
+
+        appendLogEntry(
+          quickSnapshot.timestamp,
+          quickSnapshot.distances,
+          quickSnapshot.statuses,
+          /*peckActive=*/anyPeck,
+          foodDeliveredSinceLastLog,
+          "FAST",
+          buttonLabel,
+          pecksThisInterval            // <--- add this extra column
+        );
         
         // Clear one-shot flags after logging
         foodDeliveredSinceLastLog = false;
@@ -2700,7 +2731,7 @@ void readAndSend() {
          if (withinBaseline) {
            if (stableSinceMs == 0) stableSinceMs = nowMs;
            if (!CONSTANT_SAMPLING_MODE && (nowMs - stableSinceMs >= FAST_STABLE_HOLD_MS)) {
-             appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "SLEEP", "No Activity");
+             appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "SLEEP", "No Activity", 0);
              closeLogFile(); 
              samplingState = STATE_SLEEPING;
              setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS); // Go back to slow interrupts
@@ -2718,10 +2749,10 @@ void readAndSend() {
          if (nowMs - lastChangeDuringFastMs >= BASELINE_REFRESH_MS) {
            applySnapshotAsBaseline(fullSnapshot);
            if (CONSTANT_SAMPLING_MODE) {
-              appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "INFO", "New Base");
+              appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "INFO", "New Base", 0);
               showStateBanner(F("New base"));
            } else {
-              appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "SLEEP", "New Base");
+              appendLogEntry(fullSnapshot.timestamp, fullSnapshot.distances, fullSnapshot.statuses, fullSnapshot.peckActive, false, "SLEEP", "New Base", 0);
               closeLogFile(); 
               samplingState = STATE_SLEEPING;
               setSensorIntervalMs(SENSOR_INTERVAL_SLEEP_MS);
