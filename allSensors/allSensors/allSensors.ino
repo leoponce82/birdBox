@@ -2166,6 +2166,7 @@ void maybeRewardAllSidesForPeck(const SensorSnapshot& snapshot, unsigned long no
   lastPeckActive = snapshot.peckActive;
 
   if (!newPeckEvent) return;
+  if (currentDisplayMode != DISPLAY_MODE_DEPLOY) return;
   if (currentMode != MODE_IDLE) return;
   if (nowMs - lastMoveMs <= moveCooldownMs) return;
 

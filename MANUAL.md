@@ -39,7 +39,7 @@ This guide explains how to operate the BirdBox training system from the front pa
 
 ### Options
 - **Factory Reset** restores defaults and exits.【F:allSensors/allSensors/allSensors.ino†L2265-L2286】【F:allSensors/allSensors/allSensors.ino†L1918-L1925】
-- **Peck reward** toggles peck-triggered feeding on or off; when enabled every detected peck dispenses on all four sides because the source side cannot be determined.【F:allSensors/allSensors/allSensors.ino†L2265-L2286】【F:allSensors/allSensors/allSensors.ino†L2162-L2175】
+- **Peck reward** toggles peck-triggered feeding on or off; when enabled every detected peck dispenses on all four sides because the source side cannot be determined, but the auto-feed only runs while the Deployment display mode is active (Buttons and Sensors views ignore peck-triggered feeding).【F:allSensors/allSensors/allSensors.ino†L2265-L2286】【F:allSensors/allSensors/allSensors.ino†L2162-L2176】【F:allSensors/allSensors/allSensors.ino†L2632-L2654】
 - **Logic mode** cycles through `Ordered`, `Set`, and `Immediate`; each press saves the choice.【F:allSensors/allSensors/allSensors.ino†L2265-L2286】【F:allSensors/allSensors/allSensors.ino†L2398-L2414】
 - **Back** returns to the Main Menu.【F:allSensors/allSensors/allSensors.ino†L2265-L2286】
 
