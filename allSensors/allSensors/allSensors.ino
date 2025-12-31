@@ -56,7 +56,6 @@ enum SequenceLogicMode {
 
 // --- DEFAULTS ---
 FastDisplayMode currentDisplayMode = DISPLAY_MODE_BUTTONS; 
-SequenceLogicMode currentLogicMode = SEQ_LOGIC_IMMEDIATE; // <--- CHANGED DEFAULT TO 1-SHOT
 
 const unsigned long BUTTON_SCAN_INTERVAL_US = 1000; 
 
@@ -117,13 +116,15 @@ const unsigned long SEQUENCE_TIMEOUT_MS = 5000;
 
 uint8_t storedSequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
 uint8_t storedSequenceLengths[SIDE_COUNT];
+SequenceLogicMode storedLogicModes[SIDE_COUNT];
+uint8_t storedSideActive[SIDE_COUNT];
 uint8_t sequenceProgress[SIDE_COUNT];
 unsigned long sequenceLastInput[SIDE_COUNT];
 uint8_t currentTunnelSide = 1;
 
 const uint8_t DEFAULT_SEQUENCE_TEMPLATE[DEFAULT_SEQUENCE_LENGTH] = {1, 2, 3, 4};
 const uint32_t SEQUENCE_STORAGE_MAGIC = 0xB105EED1;
-const uint8_t SEQUENCE_STORAGE_VERSION = 7; // <--- INCREMENTED TO FORCE RESET
+const uint8_t SEQUENCE_STORAGE_VERSION = 8; // <--- INCREMENTED TO FORCE RESET
 const int SEQUENCE_STORAGE_ADDR = 0;
 
 unsigned long panel1DeferredRewardMs = 0;
@@ -138,9 +139,10 @@ struct SequenceStorage {
   uint32_t magic;
   uint8_t version;
   uint8_t fastDisplayMode;
-  uint8_t logicMode;
   uint8_t rewardAllSidesOnPeckEnabled;
   uint8_t lengths[SIDE_COUNT];
+  uint8_t logicModes[SIDE_COUNT];
+  uint8_t sideActive[SIDE_COUNT];
   uint8_t sequences[SIDE_COUNT][MAX_SEQUENCE_LENGTH];
   uint8_t checksum;
 
@@ -152,10 +154,11 @@ struct SequenceStorage {
     sum += (uint8_t)((magic >> 24) & 0xFF);
     sum += version;
     sum += fastDisplayMode;
-    sum += logicMode;
     sum += rewardAllSidesOnPeckEnabled;
     for (uint8_t side = 0; side < SIDE_COUNT; side++) {
       sum += lengths[side];
+      sum += logicModes[side];
+      sum += sideActive[side];
       for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
         sum += sequences[side][i];
       }
@@ -174,6 +177,8 @@ void resetSequenceTracking() {
 void applyDefaultSequences() {
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
     storedSequenceLengths[side] = DEFAULT_SEQUENCE_LENGTH;
+    storedLogicModes[side] = SEQ_LOGIC_IMMEDIATE;
+    storedSideActive[side] = 1;
     for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
       if (i < DEFAULT_SEQUENCE_LENGTH) {
         storedSequences[side][i] = DEFAULT_SEQUENCE_TEMPLATE[i];
@@ -186,7 +191,6 @@ void applyDefaultSequences() {
   expectUnoR4 = false;
   rewardAllSidesOnPeck = false;
   currentDisplayMode = DISPLAY_MODE_BUTTONS;
-  currentLogicMode = SEQ_LOGIC_IMMEDIATE; // <--- CHANGED DEFAULT TO 1-SHOT
 }
 
 void saveSequencesToEEPROM() {
@@ -194,11 +198,12 @@ void saveSequencesToEEPROM() {
   data.magic = SEQUENCE_STORAGE_MAGIC;
   data.version = SEQUENCE_STORAGE_VERSION;
   data.fastDisplayMode = (uint8_t)currentDisplayMode;
-  data.logicMode = (uint8_t)currentLogicMode;
   data.rewardAllSidesOnPeckEnabled = rewardAllSidesOnPeck ? 1 : 0;
 
   for (uint8_t side = 0; side < SIDE_COUNT; side++) {
     data.lengths[side] = storedSequenceLengths[side];
+    data.logicModes[side] = (uint8_t)storedLogicModes[side];
+    data.sideActive[side] = storedSideActive[side] ? 1 : 0;
     for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
       data.sequences[side][i] = storedSequences[side][i];
     }
@@ -236,13 +241,12 @@ void loadSequencesFromEEPROM() {
       if (dMode > 2) dMode = 0;
       currentDisplayMode = (FastDisplayMode)dMode;
 
-      // LOAD LOGIC MODE
-      uint8_t lMode = data.logicMode;
-      if (lMode > 2) lMode = 0;
-      currentLogicMode = (SequenceLogicMode)lMode;
-
       for (uint8_t side = 0; side < SIDE_COUNT; side++) {
         storedSequenceLengths[side] = data.lengths[side];
+        uint8_t lMode = data.logicModes[side];
+        if (lMode > 2) lMode = SEQ_LOGIC_IMMEDIATE;
+        storedLogicModes[side] = (SequenceLogicMode)lMode;
+        storedSideActive[side] = data.sideActive[side] ? 1 : 0;
         for (uint8_t i = 0; i < MAX_SEQUENCE_LENGTH; i++) {
           storedSequences[side][i] = data.sequences[side][i];
         }
@@ -714,6 +718,7 @@ enum SystemMode {
   MODE_IDLE,
   MODE_MENU_MAIN,           // <--- NEW: Top Level
   MODE_MENU_SELECT_SIDE,    // (Submenu 1)
+  MODE_MENU_SIDE_SETTINGS,
   MODE_MENU_SELECT_LENGTH,
   MODE_MENU_DISPLAY_SELECT, // (Submenu 2)
   MODE_MENU_OPTIONS,        // (Submenu 3)
@@ -1831,6 +1836,29 @@ void showMenuSelectSide() {
   display.display();
 }
 
+void showMenuSideSettings() {
+  OLED_SELECT();
+  display.clearDisplay();
+  unsigned long now = millis();
+  drawStatusHeader(now);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 10);
+  display.print(F("Side "));
+  display.print(menuSelectedSide);
+  display.println(F(" settings"));
+  display.println(F("1=Sequence"));
+  display.print(F("2=Logic: "));
+  uint8_t idx = menuSelectedSide - 1;
+  if (storedLogicModes[idx] == SEQ_LOGIC_ORDERED) display.println(F("Order"));
+  else if (storedLogicModes[idx] == SEQ_LOGIC_ANY) display.println(F("Set"));
+  else display.println(F("1-Shot"));
+  display.print(F("3=Active: "));
+  display.println(storedSideActive[idx] ? F("On") : F("Off"));
+  display.println(F("4=Back"));
+  display.display();
+}
+
 void showMenuSelectLength() {
   OLED_SELECT();
   display.clearDisplay();
@@ -2013,6 +2041,7 @@ void saveMenuSequence() {
 
 void deliverRewardForSide(uint8_t side) {
   if (side < 1 || side > SIDE_COUNT) return;
+  if (!storedSideActive[side - 1]) return;
   if (!rotateTunnelToSide(side)) {
     return;
   }
@@ -2116,6 +2145,8 @@ void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now
   uint8_t idx = panel - 1;
   uint8_t expectedLength = storedSequenceLengths[idx];
   if (expectedLength == 0) return;
+  SequenceLogicMode logicMode = storedLogicModes[idx];
+  bool sideActive = storedSideActive[idx];
 
   // Timeout Logic (Applies to Ordered/Set modes, irrelevant for Immediate but harmless)
   if (sequenceProgress[idx] > 0 && sequenceLastInput[idx] != 0 &&
@@ -2126,7 +2157,7 @@ void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now
   // -----------------------------------------------------
   // MODE A: ORDERED (Strict 1 -> 2 -> 3)
   // -----------------------------------------------------
-  if (currentLogicMode == SEQ_LOGIC_ORDERED) {
+  if (logicMode == SEQ_LOGIC_ORDERED) {
     if (sequenceProgress[idx] < expectedLength &&
         buttonNumber == storedSequences[idx][sequenceProgress[idx]]) {
       sequenceProgress[idx]++;
@@ -2137,7 +2168,7 @@ void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now
     }
 
     if (sequenceProgress[idx] >= expectedLength) {
-      if (now - lastMoveMs > moveCooldownMs) {
+      if (sideActive && now - lastMoveMs > moveCooldownMs) {
         buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
         deliverRewardForSide(panel);
       }
@@ -2147,7 +2178,7 @@ void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now
   // -----------------------------------------------------
   // MODE B: ANY SET (Must collect all valid buttons)
   // -----------------------------------------------------
-  else if (currentLogicMode == SEQ_LOGIC_ANY) {
+  else if (logicMode == SEQ_LOGIC_ANY) {
     bool isCorrectButton = false;
     uint8_t targetMask = 0;
     
@@ -2164,7 +2195,7 @@ void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now
     }
 
     if (sequenceProgress[idx] == targetMask) {
-       if (now - lastMoveMs > moveCooldownMs) {
+       if (sideActive && now - lastMoveMs > moveCooldownMs) {
          buzzTest(BUZZER_REWARD_FREQ_HZ, BUZZER_REWARD_DURATION_MS);
          deliverRewardForSide(panel);
        }
@@ -2188,7 +2219,7 @@ void processSequenceInput(uint8_t panel, uint8_t buttonNumber, unsigned long now
        }
     }
 
-    if (isValidTrigger) {
+    if (isValidTrigger && sideActive) {
        // --- NEW LOGIC START ---
        // If this is Panel 1, we must wait to see if the user is trying to enter the menu
        if (panel == 1) {
@@ -2297,7 +2328,7 @@ void showMenuMain() {
   display.setTextSize(1);
   display.setCursor(0, 10);
   display.println(F("MAIN MENU"));
-  display.println(F("1. Change Sequences"));
+  display.println(F("1. Side settings"));
   display.println(F("2. Change Display"));
   display.println(F("3. Options"));
   display.println(F("4. POWER OFF")); // Changed from Exit
@@ -2342,14 +2373,8 @@ void showMenuOptions() {
   display.print(F("2. Peck reward: "));
   display.println(rewardAllSidesOnPeck ? F("SIDE 1") : F("OFF"));
 
-  // UPDATED DISPLAY LOGIC
-  display.print(F("3. Logic: "));
-  if (currentLogicMode == SEQ_LOGIC_ORDERED) display.println(F("Order"));
-  else if (currentLogicMode == SEQ_LOGIC_ANY) display.println(F("Set"));
-  else display.println(F("1-Shot")); // "1-Shot" implies immediate reward
-  
   display.setCursor(0, 55);
-  display.println(F("4. Back"));
+  display.println(F("3. Back"));
   display.display();
 }
 // This function contains the logic that USED to be in handleButtonPress
@@ -2378,6 +2403,13 @@ void executeMenuCommand(uint8_t number) {
       if (number >= 1 && number <= SIDE_COUNT) {
         menuSelectedSide = number;
         resetMenuSequenceBuffer();
+        currentMode = MODE_MENU_SIDE_SETTINGS;
+        showMenuSideSettings();
+      }
+      break;
+
+    case MODE_MENU_SIDE_SETTINGS: {
+      if (number == 1) {
         uint8_t idx = menuSelectedSide - 1;
         menuSequenceTargetLength = storedSequenceLengths[idx];
         if (menuSequenceTargetLength < MIN_SEQUENCE_LENGTH ||
@@ -2386,8 +2418,25 @@ void executeMenuCommand(uint8_t number) {
         }
         currentMode = MODE_MENU_SELECT_LENGTH;
         showMenuSelectLength();
+      } else if (number == 2) {
+        uint8_t idx = menuSelectedSide - 1;
+        uint8_t mode = (uint8_t)storedLogicModes[idx];
+        mode++;
+        if (mode > 2) mode = 0;
+        storedLogicModes[idx] = (SequenceLogicMode)mode;
+        saveSequencesToEEPROM();
+        showMenuSideSettings();
+      } else if (number == 3) {
+        uint8_t idx = menuSelectedSide - 1;
+        storedSideActive[idx] = storedSideActive[idx] ? 0 : 1;
+        saveSequencesToEEPROM();
+        showMenuSideSettings();
+      } else if (number == 4) {
+        currentMode = MODE_MENU_SELECT_SIDE;
+        showMenuSelectSide();
       }
       break;
+    }
 
     case MODE_MENU_SELECT_LENGTH:
       if (number == 1) {
@@ -2405,11 +2454,10 @@ void executeMenuCommand(uint8_t number) {
         currentMode = MODE_MENU_ENTER_SEQUENCE;
         showMenuEnterSequence();
       } else if (number == 4) {
-        currentMode = MODE_MENU_SELECT_SIDE;
-        menuSelectedSide = 0;
+        currentMode = MODE_MENU_SIDE_SETTINGS;
         menuSequenceTargetLength = DEFAULT_SEQUENCE_LENGTH;
         resetMenuSequenceBuffer();
-        showMenuSelectSide();
+        showMenuSideSettings();
       }
       break;
 
@@ -2437,8 +2485,8 @@ void executeMenuCommand(uint8_t number) {
         currentMode = MODE_MENU_MAIN;
         showMenuMain();
       } else if (number == 4) {
-        currentMode = MODE_MENU_SELECT_SIDE;
-        showMenuSelectSide();
+        currentMode = MODE_MENU_SIDE_SETTINGS;
+        showMenuSideSettings();
       }
       break;
 
@@ -2472,13 +2520,6 @@ void executeMenuCommand(uint8_t number) {
         saveSequencesToEEPROM();
         showMenuOptions();
       } else if (number == 3) {
-        uint8_t mode = (uint8_t)currentLogicMode;
-        mode++;
-        if (mode > 2) mode = 0;
-        currentLogicMode = (SequenceLogicMode)mode;
-        saveSequencesToEEPROM();
-        showMenuOptions();
-      } else if (number == 4) {
         currentMode = MODE_MENU_MAIN;
         showMenuMain();
       }
